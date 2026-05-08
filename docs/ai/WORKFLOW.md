@@ -2,13 +2,18 @@
 
 ## Directories
 
-- `agents-a8f9af1c4a-dev`: DeepSeek V4 Pro development worktree.
-- `agents-a8f9af1c4a-review`: Claude Sonnet review worktree.
+Check actual worktree names with `git worktree list` from the main repo.
+This repo (`assistant-dev`) is the dev worktree; `assistant-review` is the review worktree.
+
+Actual layout (example):
+- `~/assistant` — master (main repo)
+- `~/assistant-dev` — ai/dev-deepseek (dev worktree)
+- `~/assistant-review` — ai/review-sonnet (review worktree)
 
 ## Development
 
 ```bash
-cd ~/projects/agents-a8f9af1c4a-dev
+cd ~/assistant-dev
 claude-deepseek
 ```
 
@@ -27,10 +32,10 @@ Report summary, tests, commit hash, and risks.
 First point the review worktree at the dev commit:
 
 ```bash
-cd ~/projects/agents-a8f9af1c4a-dev
+cd ~/assistant-dev
 DEV_COMMIT=$(git rev-parse HEAD)
 
-cd ~/projects/agents-a8f9af1c4a-review
+cd ~/assistant-review
 git checkout -B ai/review-sonnet "$DEV_COMMIT"
 ```
 
@@ -66,7 +71,7 @@ Preferred flow:
 Only after review approval:
 
 ```bash
-cd ~/projects/agents-a8f9af1c4a
+cd ~/assistant
 git checkout master
 git merge ai/dev-deepseek
 git push

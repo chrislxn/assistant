@@ -16,6 +16,8 @@ Rules:
 - Preserve existing APIs unless the task requires a change.
 - Prefer small commits.
 - Never mark a task complete without running tests or explaining why tests could not run.
+  - Unit tests (no external services): must run.
+  - Integration tests (require live Telegram, kiwi-mem, DB): acceptable to skip with explanation.
 - Do not merge into main.
 - Do not modify review-only branches.
 - If a database migration is involved, check idempotency, rollback strategy, and data safety.
