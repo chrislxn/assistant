@@ -4143,21 +4143,19 @@ async def resolve_candidate(candidate_id: str) -> dict:
     """
     评估并处理一条 candidate 的提交/拒绝/审核。
 
+    Phase 1 rules:
+      - All guard checks (requires_review, keep_pending) are side-effect-free
+        except for updating candidate.status.
+      - Conflict lookup + supersede + auto-commit writes happen in a single
+        explicit transaction.  Old items are never superseded unless the new
+        commit succeeds.
+
     Returns:
         {"action": "auto_commit" | "keep_pending" | "requires_review",
          "reason": "...",
          "memory_id": "uuid or None",
          "legacy_id": int or None,
          "superseded_id": "uuid or None"}
-
-    Rules (order matters, first match wins):
-      R4: health_pattern / health_baseline → requires_review (always)
-      R5: identity_fact / relationship_context / risk_flag / policy_rule → requires_review (unless user_direct)
-      R6: diagnosis-like keywords → requires_review (unless user_direct)
-      R1: assistant_inferred / claude_mcp / hermes_agent → keep_pending (remaining non-high-stakes)
-      R2: user_direct + low-risk + non-high-stakes → auto_commit
-      R3: system_generated + health_observation_summary → auto_commit
-      R7: conflict on (subject_key, predicate_key) → supersede (if eligible) or keep_pending
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -4171,6 +4169,7 @@ async def resolve_candidate(candidate_id: str) -> dict:
 
         source_trust = cand["source_trust"] or "unknown"
         memory_type = cand["memory_type"] or "unknown"
+        extractor_name = (cand["extractor_name"] or "").lower()
         subject_key = (cand["subject_key"] or "").strip()
         predicate_key = (cand["predicate_key"] or "").strip()
         rendered_text = cand["rendered_text"] or ""
@@ -4180,9 +4179,16 @@ async def resolve_candidate(candidate_id: str) -> dict:
         source_event_ids = cand["source_event_ids"] or []
         actor_scope = cand["actor_scope"] or ["local_bot", "claude_mcp"]
 
-        # ---- Check diagnosis-like content ----
+        # ------------------------------------------------------------
+        # Phase 1: 无副作用判断 (compute flags only)
+        # ------------------------------------------------------------
+
         text_lower = (rendered_text + " " + str(cand["canonical_value"] or "")).lower()
         has_diagnosis = any(kw in text_lower for kw in _DIAGNOSIS_KEYWORDS)
+        is_assistant_or_agent = (
+            source_trust == "assistant_inferred"
+            or extractor_name in ("claude_mcp", "hermes_agent")
+        )
 
         # ---- R4: health_pattern / health_baseline → requires_review (always) ----
         if memory_type in ("health_pattern", "health_baseline"):
@@ -4197,7 +4203,7 @@ async def resolve_candidate(candidate_id: str) -> dict:
         # ---- R5: high-stakes types require review (unless user_direct) ----
         if memory_type in _HIGH_STAKES_TYPES:
             if source_trust == "user_direct":
-                pass  # fall through to auto-commit check
+                pass  # fall through
             else:
                 await conn.execute(
                     "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
@@ -4217,67 +4223,19 @@ async def resolve_candidate(candidate_id: str) -> dict:
                     "reason": "diagnosis-like content requires human review",
                     "memory_id": None, "legacy_id": None, "superseded_id": None}
 
-        # ---- R1: assistant_inferred / hermes_agent / claude_mcp → keep_pending ----
-        if source_trust in ("assistant_inferred",):
+        # ---- R1: assistant_inferred / claude_mcp / hermes_agent → keep_pending ----
+        # 当前 data model：claude_mcp/hermes_agent 使用 source_trust='assistant_inferred'，
+        # 实际 agent 标识在 extractor_name 字段。同时检查两者。
+        if is_assistant_or_agent:
             return {"action": "keep_pending",
-                    "reason": f"source_trust={source_trust} never auto-commits",
+                    "reason": f"source_trust={source_trust}, extractor_name={extractor_name} never auto-commits",
                     "memory_id": None, "legacy_id": None, "superseded_id": None}
 
-        # ---- R7: conflict detection on (subject_key, predicate_key) ----
-        superseded_id = None
-        if subject_key and predicate_key:
-            existing = await conn.fetchrow(
-                """
-                SELECT memory_id FROM memory_items
-                WHERE subject_key = $1
-                  AND predicate_key = $2
-                  AND status = 'active'
-                LIMIT 1
-                """,
-                subject_key, predicate_key,
-            )
-            if existing:
-                # ---- R2+R3 check: only auto-commit if source_trust allows ----
-                if source_trust == "user_direct" and memory_type not in _HIGH_STAKES_TYPES:
-                    # R2: user_direct + low-risk → auto_commit, supersede old
-                    old_id = str(existing["memory_id"])
-                    await conn.execute(
-                        """
-                        UPDATE memory_items
-                        SET status = 'superseded',
-                            valid_to = NOW(),
-                            updated_at = NOW()
-                        WHERE memory_id = $1
-                        """,
-                        old_id,
-                    )
-                    superseded_id = old_id
-                elif source_trust == "system_generated" and memory_type == "health_observation_summary":
-                    # R3: system_generated + health_observation_summary → auto_commit, supersede old
-                    old_id = str(existing["memory_id"])
-                    await conn.execute(
-                        """
-                        UPDATE memory_items
-                        SET status = 'superseded',
-                            valid_to = NOW(),
-                            updated_at = NOW()
-                        WHERE memory_id = $1
-                        """,
-                        old_id,
-                    )
-                    superseded_id = old_id
-                else:
-                    # Conflict with existing active memory, and source_trust doesn't permit
-                    # auto-commit over it → keep_pending + flag conflict
-                    return {"action": "keep_pending",
-                            "reason": f"conflict with existing active memory "
-                                      f"(subject_key={subject_key}, predicate_key={predicate_key})",
-                            "memory_id": None, "legacy_id": None, "superseded_id": None}
-
-        # ---- Determine if auto-commit is allowed ----
+        # ---- Determine auto-commit eligibility (side-effect-free) ----
         can_auto_commit = False
-        if source_trust == "user_direct" and memory_type not in _HIGH_STAKES_TYPES:
-            if not has_diagnosis:
+        if source_trust == "user_direct":
+            # WARN-1: 使用 low-risk whitelist，未知类型默认不 auto_commit
+            if memory_type in _LOW_RISK_TYPES and not has_diagnosis:
                 can_auto_commit = True  # R2
         elif source_trust == "system_generated" and memory_type == "health_observation_summary":
             can_auto_commit = True  # R3
@@ -4287,56 +4245,86 @@ async def resolve_candidate(candidate_id: str) -> dict:
                     "reason": f"no auto-commit rule matched (source_trust={source_trust}, memory_type={memory_type})",
                     "memory_id": None, "legacy_id": None, "superseded_id": None}
 
-        # ---- Auto-Commit ----
+        # ------------------------------------------------------------
+        # Phase 2: auto-commit (transaction — BLOCK-2)
+        # ------------------------------------------------------------
         now_ts = datetime.now(timezone.utc)
         valid_from_ts = now_ts  # candidates don't carry valid_from yet
 
-        # 1. Insert into memory_items (new committed layer)
-        new_id = await conn.fetchval(
-            """
-            INSERT INTO memory_items
-                (memory_type, subject_key, predicate_key, rendered_text,
-                 canonical_value, source_event_ids, source_candidate_id,
-                 source_trust, privacy_level, actor_scope,
-                 confidence, importance, status,
-                 supersedes_memory_id, valid_from, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10,
-                    $11, $12, 'active', $13, $14, NOW(), NOW())
-            RETURNING memory_id
-            """,
-            memory_type, subject_key, predicate_key, rendered_text,
-            json.dumps(cand["canonical_value"] or {}), source_event_ids, candidate_id,
-            source_trust, privacy_level, actor_scope,
-            confidence, importance,
-            superseded_id, valid_from_ts,
-        )
+        async with conn.transaction():
+            # ---- R7: conflict lookup (BLOCK-1: only after can_auto_commit=True) ----
+            superseded_id = None
+            if subject_key and predicate_key:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT memory_id FROM memory_items
+                    WHERE subject_key = $1
+                      AND predicate_key = $2
+                      AND status = 'active'
+                    LIMIT 1
+                    """,
+                    subject_key, predicate_key,
+                )
+                if existing:
+                    old_id = str(existing["memory_id"])
+                    await conn.execute(
+                        """
+                        UPDATE memory_items
+                        SET status = 'superseded',
+                            valid_to = NOW(),
+                            updated_at = NOW()
+                        WHERE memory_id = $1
+                        """,
+                        old_id,
+                    )
+                    superseded_id = old_id
 
-        # 2. Insert into legacy memories (compat)
-        legacy_id = await conn.fetchval(
-            """
-            INSERT INTO memories
-                (content, importance, source, source_trust, source_event_ids,
-                 memory_type, subject_key, predicate_key, confidence,
-                 privacy_level, actor_scope, status, title)
-            VALUES ($1, $2, 'candidate_commit', $3, $4, $5, $6, $7, $8, $9,
-                    '{local_bot,claude_mcp}', 'active', '')
-            RETURNING id
-            """,
-            rendered_text, importance, source_trust, source_event_ids,
-            memory_type, subject_key, predicate_key, confidence, privacy_level,
-        )
+            # 1. Insert into memory_items (new committed layer)
+            new_id = await conn.fetchval(
+                """
+                INSERT INTO memory_items
+                    (memory_type, subject_key, predicate_key, rendered_text,
+                     canonical_value, source_event_ids, source_candidate_id,
+                     source_trust, privacy_level, actor_scope,
+                     confidence, importance, status,
+                     supersedes_memory_id, valid_from, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10,
+                        $11, $12, 'active', $13, $14, NOW(), NOW())
+                RETURNING memory_id
+                """,
+                memory_type, subject_key, predicate_key, rendered_text,
+                json.dumps(cand["canonical_value"] or {}), source_event_ids, candidate_id,
+                source_trust, privacy_level, actor_scope,
+                confidence, importance,
+                superseded_id, valid_from_ts,
+            )
 
-        # 3. Update candidate status
-        await conn.execute(
-            """
-            UPDATE memory_candidates
-            SET status = 'committed',
-                committed_memory_id = $1,
-                reviewed_at = NOW()
-            WHERE candidate_id = $2
-            """,
-            legacy_id, candidate_id,
-        )
+            # 2. Insert into legacy memories (compat dual-write)
+            legacy_id = await conn.fetchval(
+                """
+                INSERT INTO memories
+                    (content, importance, source, source_trust, source_event_ids,
+                     memory_type, subject_key, predicate_key, confidence,
+                     privacy_level, actor_scope, status, title)
+                VALUES ($1, $2, 'candidate_commit', $3, $4, $5, $6, $7, $8, $9,
+                        '{local_bot,claude_mcp}', 'active', '')
+                RETURNING id
+                """,
+                rendered_text, importance, source_trust, source_event_ids,
+                memory_type, subject_key, predicate_key, confidence, privacy_level,
+            )
+
+            # 3. Update candidate status
+            await conn.execute(
+                """
+                UPDATE memory_candidates
+                SET status = 'committed',
+                    committed_memory_id = $1,
+                    reviewed_at = NOW()
+                WHERE candidate_id = $2
+                """,
+                legacy_id, candidate_id,
+            )
 
         return {"action": "auto_commit",
                 "reason": f"auto-committed (source_trust={source_trust}, memory_type={memory_type})",
