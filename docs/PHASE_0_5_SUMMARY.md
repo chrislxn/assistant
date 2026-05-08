@@ -19,7 +19,7 @@ Phase 0.5 的目的是：
 
 **一句话总结：**
 
-> Phase 0.5 upgraded kiwi-mem from a simple memory plugin into the foundation of a long-term personal AI memory system — with provenance, versioned core blocks, policy-gated context injection, and access auditing.
+> Phase 0.5 upgraded kiwi-mem from a simple memory plugin into the foundation of a long-term personal AI memory system — with provenance, versioned core blocks, whitelist-based core context injection, and access auditing.
 
 ---
 
@@ -64,7 +64,7 @@ Phase 0.5 的目的是：
 |------|------|
 | `append_event()` | 写 memory_events，返回 event_id (UUID)，支持 idempotency_key 幂等 |
 | `create_candidate()` | 写 memory_candidates，pending_auto / pending 分流 |
-| `auto_commit_candidate()` | user_direct / system_generated 自动提交到 memories |
+| `auto_commit_candidate()` | v0.5 轻量自动提交辅助函数，仅用于 user_direct / system_generated 等低风险来源；不等同于完整 Phase 1 resolver。assistant_inferred 仍保持 pending |
 | `get_active_core_block()` | 查最新 approved active core block |
 | `create_core_block_version()` | 版本化更新，旧版本 superseded_at=NOW() |
 | `log_memory_access()` | fire-and-forget 审计日志 |
@@ -247,7 +247,7 @@ chat request
 
 | 项目 | 说明 |
 |------|------|
-| **Legacy memories 仍是主 committed layer** | `memory_items` 表已建但尚未启用，当前 committed memory 仍在 `memories` 表中 |
+| **Legacy memories 仍是主 committed layer** | `memory_items` 尚未建立，当前 committed memory 仍在 `memories` 表中；Phase 1 需要正式引入 `memory_items`（UUID）作为新 committed 层 |
 | **Candidate resolver 未实现** | `memory_candidates` 目前是 shadow/proposal 层，`assistant_inferred` 全部 pending，无自动提交/冲突检测 |
 | **Privacy-gated retrieval 未实现** | `privacy_level` 和 `actor_scope` 字段已存在，但检索时不根据这两个字段过滤 |
 | **Intent classifier 未实现** | 所有 chat 请求统一用 `intent='chat'`，无差异化注入策略 |
@@ -265,7 +265,7 @@ chat request
 
 以下功能**明确不在 Phase 0.5 范围内**，禁止当作已实现：
 
-- full memory_items migration（表已建，未启用）
+- full memory_items migration（尚未建立）
 - candidate resolver / conflict detector
 - privacy-gated retrieval（字段已建，过滤未实现）
 - intent-aware retrieval
