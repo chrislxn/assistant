@@ -41,8 +41,23 @@
 - M6.1: mcp_server.py save_memory 写入 source_trust=assistant_inferred / source_type=mcp_agent / actor=claude_mcp
 - MCP 不允许直接写 core_blocks
 
+### M7 — Hermes Conservative Integration（受限 Agent 接入）
+- 新增 `kiwi-mem/hermes_mcp.py`：5 个受限工具（hermes_observe / hermes_propose_memory / hermes_search / hermes_get_recent / hermes_get_context）
+- 新增 3 个 REST 端点：POST /events（append_event 写入观察）、POST /candidates（memory_candidates 提案）、POST /events/access-log（审计日志）
+- GET /debug/memories 新增 `exclude_privacy` 参数，支持排除 sealed/restricted
+- Hermes MCP 挂载路径：/hermes/mcp
+- Security review 结论：7 PASS / 1 WARN（后修复），0 FAIL
+
+### M7.1 — Hermes Core Block Whitelist（Security WARN #5 修复）
+- Hermes get_context 只注入 core block whitelist：**response_policy + active_projects**
+- Hermes **不注入**所有 approved core_blocks：health_baseline / relationship_context / test.block 不在默认 Hermes context 中
+- 未来如需健康上下文，应新增 `hermes_get_health_context` 或 intent='health' 专用路径，而非扩展默认 whitelist
+- HERMES_CORE_WHITELIST 定义在 `hermes_mcp.py`，与 main chat path 白名单（main.py:472）保持同步
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
+Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
+Security review 验证：**test.block 过滤通过**（Hermes context 只含 response_policy + active_projects）
 
 ## 下一阶段
 **Phase 1 — planning（尚未开始）**
@@ -72,6 +87,11 @@ Phase 0.5 回归验证：**10/10 全通过**
 - bot 传 skip_core_blocks=True 避免 kiwi-mem 侧重复注入
 - logging fire-and-forget；失败 catch + warning，不影响聊天回复
 - bot 侧 legacy_memory_ids 暂传空数组（HTTP API 返回格式化文本，无 IDs）
+- Hermes MCP 所有写入强制 source_trust=assistant_inferred / actor=hermes_agent / source_type=hermes_agent（由 hermes_mcp.py 硬编码，不信任外部输入）
+- Hermes 写入走 POST /events（append-only event）+ POST /candidates（status=pending），不直接写 memories / core_blocks
+- Hermes 读取默认排除了 sealed + restricted（EXCLUDE_PRIVACY = "sealed,restricted"）
+- Hermes get_context core block whitelist = {response_policy, active_projects}；health_baseline / relationship_context 不属于默认 Hermes context
+- 未来健康上下文需新增 hermes_get_health_context 或 intent='health' 专用路径
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
