@@ -718,6 +718,90 @@ async def init_tables():
             ON memory_access_log (accessed_at DESC)
         """)
 
+        # 5. memory_items — UUID-based committed memory（Phase 1.0 M1）
+        # 不含 embedding。embedding 留给未来独立表 memory_embeddings。
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_items (
+                memory_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                memory_type          TEXT NOT NULL DEFAULT 'unknown',
+                subject_key          TEXT DEFAULT '',
+                predicate_key        TEXT DEFAULT '',
+                rendered_text        TEXT NOT NULL DEFAULT '',
+                canonical_value      JSONB DEFAULT '{}',
+                source_event_ids     UUID[] DEFAULT '{}',
+                source_candidate_id  UUID
+                    REFERENCES memory_candidates(candidate_id)
+                    ON DELETE SET NULL,
+                source_trust         TEXT NOT NULL DEFAULT 'unknown',
+                privacy_level        TEXT NOT NULL DEFAULT 'personal',
+                actor_scope          TEXT[] DEFAULT '{local_bot,claude_mcp}',
+                confidence           REAL DEFAULT 0.7,
+                importance           INTEGER DEFAULT 5,
+                heat                 REAL DEFAULT 1.0,
+                status               TEXT NOT NULL DEFAULT 'active',
+                supersedes_memory_id UUID
+                    REFERENCES memory_items(memory_id)
+                    ON DELETE SET NULL,
+                valid_from           TIMESTAMPTZ,
+                valid_to             TIMESTAMPTZ,
+                access_count         INTEGER DEFAULT 0,
+                last_accessed_at     TIMESTAMPTZ,
+                created_at           TIMESTAMPTZ DEFAULT NOW(),
+                updated_at           TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+        # Idempotent: add updated_at + FK constraints on existing tables
+        # (CREATE TABLE IF NOT EXISTS won't alter an already-existing table)
+        await conn.execute("""
+            ALTER TABLE memory_items
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()
+        """)
+        # FK: source_candidate_id → memory_candidates
+        try:
+            await conn.execute("""
+                ALTER TABLE memory_items
+                ADD CONSTRAINT fk_memory_items_source_candidate
+                FOREIGN KEY (source_candidate_id)
+                REFERENCES memory_candidates(candidate_id)
+                ON DELETE SET NULL
+            """)
+        except Exception:
+            pass  # constraint already exists
+        # Self-FK: supersedes_memory_id → memory_items
+        try:
+            await conn.execute("""
+                ALTER TABLE memory_items
+                ADD CONSTRAINT fk_memory_items_supersedes
+                FOREIGN KEY (supersedes_memory_id)
+                REFERENCES memory_items(memory_id)
+                ON DELETE SET NULL
+            """)
+        except Exception:
+            pass  # constraint already exists
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_items_status
+            ON memory_items (status, created_at DESC)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_items_type_status
+            ON memory_items (memory_type, status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_items_subject
+            ON memory_items (subject_key, predicate_key)
+            WHERE subject_key != '' AND status = 'active'
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_items_source_trust
+            ON memory_items (source_trust, created_at DESC)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_items_source_candidate
+            ON memory_items (source_candidate_id)
+            WHERE source_candidate_id IS NOT NULL
+        """)
+
         # v7.0：memories 表扩展 — provenance 字段
         for col_name, col_def in [
             ("status",           "TEXT DEFAULT 'active'"),
@@ -757,7 +841,7 @@ async def init_tables():
             WHERE source_trust = 'unknown' OR source_trust IS NULL
         """)
 
-    print("✅ 数据库表结构已就绪（v7.0 Phase 0.5）")
+    print("✅ 数据库表结构已就绪（v8.0 Phase 1.0 M1）")
 
 
 # ============================================================
@@ -3964,6 +4048,71 @@ async def get_active_core_block(block_key: str) -> Optional[str]:
             block_key,
         )
     return row["content_text"] if row else None
+
+
+# ============================================================
+# Phase 1.0 M1 — memory_items helpers
+# ============================================================
+
+async def insert_memory_item(
+    rendered_text: str,
+    source_trust: str,
+    *,
+    memory_type: str = "unknown",
+    subject_key: str = "",
+    predicate_key: str = "",
+    source_event_ids: Optional[List[str]] = None,
+    source_candidate_id: Optional[str] = None,
+    privacy_level: str = "personal",
+    actor_scope: Optional[List[str]] = None,
+    confidence: float = 0.7,
+    importance: int = 5,
+    canonical_value: Optional[dict] = None,
+    valid_from: Optional[datetime] = None,
+    supersedes_memory_id: Optional[str] = None,
+) -> str:
+    """
+    向 memory_items 写入一条 committed memory，返回 memory_id (UUID 字符串)。
+
+    Phase 1.0 M1：仅提供写入能力，不接入 resolver、不改变检索路径。
+    """
+    pool = await get_pool()
+    event_ids = [str(e) for e in (source_event_ids or [])]
+    payload = json.dumps(canonical_value or {})
+    scope = actor_scope or ["local_bot", "claude_mcp"]
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO memory_items
+                (memory_type, subject_key, predicate_key, rendered_text,
+                 canonical_value, source_event_ids, source_candidate_id,
+                 source_trust, privacy_level, actor_scope,
+                 confidence, importance, status,
+                 valid_from, supersedes_memory_id, updated_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10,
+                    $11, $12, 'active', $13, $14, NOW())
+            RETURNING memory_id
+            """,
+            memory_type, subject_key, predicate_key, rendered_text,
+            payload, event_ids, source_candidate_id,
+            source_trust, privacy_level, scope,
+            confidence, importance,
+            valid_from or datetime.now(timezone.utc),
+            supersedes_memory_id,
+        )
+    return str(row["memory_id"])
+
+
+async def get_memory_item(memory_id: str) -> Optional[dict]:
+    """按 memory_id 查询单条 memory_item，不存在返回 None。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM memory_items WHERE memory_id = $1",
+            memory_id,
+        )
+    return dict(row) if row else None
 
 
 async def create_core_block_version(

@@ -45,6 +45,8 @@ from database import (
     upsert_raw_health_data, upsert_health_summary, get_health_summary,
     # v7.0 Phase 0.5
     append_event, create_candidate, auto_commit_candidate,
+    # Phase 1.0 M1
+    insert_memory_item, get_memory_item,
     get_active_core_block, create_core_block_version, log_memory_access,
     migrate_persona_to_core_block,
 )
