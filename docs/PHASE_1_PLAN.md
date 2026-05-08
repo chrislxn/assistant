@@ -156,6 +156,28 @@ resolve_candidate() → auto_commit
 
 非 auto_commit 的 candidate 保持 `status = 'pending'`，等待 review queue。
 
+#### valid_from / valid_to Rules（Pre-Flight Decision）
+
+Phase 1.0 resolver 和 review queue 必须统一 `valid_from` / `valid_to` 行为：
+
+**Auto-commit 时：**
+- `new.valid_from = candidate.valid_from`（如果 candidate 提供了）否则 `now()`
+- `new.valid_to = NULL`
+
+**Manual commit 时（`POST /admin/candidates/{id}/commit`）：**
+- 同上。
+
+**Supersede 冲突时（new memory 取代 old active memory）：**
+- `old.status = 'superseded'`
+- `old.valid_to = now()`
+- `new.valid_from = now()`（除非 candidate 提供 explicit `valid_from`）
+- `new.supersedes_memory_id = old.memory_id`
+
+**无冲突时：**
+- `valid_to` 保持 `NULL`（表示当前有效，无截止时间）。
+
+这些规则是 Phase 1.0 resolver 的最低要求。让 `valid_from` / `valid_to` 在 Phase 1.0 就进入数据模型，避免 Phase 1.1 或以后回填。
+
 ### 1.6 Review Queue API
 
 Phase 1.0 只做 4 个端点，不做 UI：
@@ -170,6 +192,19 @@ Phase 1.0 只做 4 个端点，不做 UI：
 **权限：** 受 `AdminAuthMiddleware` 保护（`PROTECTED_PREFIXES` 加入 `/admin/candidates`）。
 
 **不做：** edit、batch、complex UI、multi-user approval、notification、audit workflow。
+
+#### assistant_inferred Backlog（Pre-Flight Decision）
+
+`assistant_inferred`（含 `claude_mcp` / `hermes_agent`）默认 `keep_pending` 是正确的安全策略，但会产生 pending candidate 堆积（backlog）。
+
+**Phase 1.0 应对：**
+
+- Backlog 必须可见：`GET /admin/candidates` 响应包含 `created_at`、`source_trust`、`confidence`、`age_days`（`NOW() - created_at`），支持按 `source_trust` / `age_days` 排序。
+- Phase 1.0 **不**因为 confidence 高就自动 commit `assistant_inferred`。
+- Phase 1.0 **不**自动 archive stale pending candidates（可列为 Phase 1.2 / later 选项）。
+- Phase 1.0 可选增加 stats 端点 `GET /admin/candidates/stats`，按 `source_trust` / `status` / `age_bucket` 分组计数。
+
+**未来决策依赖观察：** 需要在真实运行中观察 pending 增长速度，再决定 Phase 1.2 是否引入 stale archive 策略（如 >90 天未审核的 assistant_inferred candidate 自动 `rejected` 或 `archived`）。
 
 ### 1.7 不改 MCP / Hermes
 
@@ -259,6 +294,14 @@ privacy_level IN (
 
 `api_client` currently maps to `local_bot` policy unless explicitly overridden.
 
+#### api_client Security Note（Pre-Flight Decision）
+
+`api_client` 当前映射到 `local_bot` 权限**仅因为** `/v1/chat/completions` 被假定为可信本地/私有端点。
+
+- 如果未来 `/v1/chat/completions` 暴露给第三方工具、外部服务或低信任 client，**不能**继续默认 `local_bot`。
+- Future option：要求显式 `X-Actor` header，或默认 `api_client` 降为低权限策略（如 `personal`-only）。
+- **Phase 1.1 实现前必须确认** `/v1/chat/completions` 的调用边界（谁在调、从哪里调、是否需要拆分端点）。
+
 ### 2.6 Eval Set
 
 **10-15 条标注查询，可重复运行，不需要外部 LLM judge。**
@@ -298,6 +341,48 @@ Eval 查询分为两类：
 | L5 | "我的学术计划是什么？" | `academic_context` (personal) | 所有 actor 都应可见（验证 personal 不泄露规则没有过度过滤） |
 
 **注意：** 关系/健康查询在 negative leakage tests 中验证的是"隐私门是否生效"，不是"记忆是否被召回"。sensitive_leak_count 必须为 0。
+
+#### Eval Seed Data（Pre-Flight Decision）
+
+**eval runner 不能只依赖现有真实 DB 数据，否则结果不可信。** 真实数据库中的数据可能缺失、类型不均、隐私级别标记不完整，导致 eval 结果不可复现。
+
+Phase 1.1 必须配套 `scripts/seed_eval_data.py`（或 `tests/seed_eval_data.py`），写入受控的测试记忆：
+
+- `source_type='eval_seed'`
+- `source_trust='system_generated'`
+- `actor='eval_seed'`
+- `privacy_level` 按测试需要明确设置（`personal` / `sensitive` / `restricted` / `sealed`）
+- `memory_type` / `subject_key` / `predicate_key` 明确可验证
+
+**Seed 数据约束：**
+
+- 必须可重复运行（幂等 — 重复 seed 不产生重复记录）。
+- 必须可清理（`scripts/clean_eval_data.py` 或 `DELETE WHERE source_type='eval_seed'`）。
+- 不应污染真实长期记忆（`source_type='eval_seed'` 标记确保检索和生产路径可区分）。
+- Negative leakage tests 需要 seed `sensitive` / `restricted` / `sealed` 数据来验证不会泄漏到未授权 actor。
+
+**注意：** 关系/健康查询在 negative leakage tests 中验证的是"隐私门是否生效"，不是"记忆是否被召回"。sensitive_leak_count 必须为 0。
+
+#### Eval Seed Isolation（Pre-Flight Decision）
+
+**Eval seed data must not leak into normal retrieval.** 否则 preference / health / relationship 类测试数据会污染真实记忆。
+
+Any memory or event created for eval must be marked with:
+
+- `source_type='eval_seed'`
+- `actor='eval_seed'`
+- `source_trust='system_generated'`
+
+**Normal retrieval must exclude eval seed data by default.** 未来检索 SQL 必须遵循：
+
+```sql
+AND (
+    source_type IS DISTINCT FROM 'eval_seed'
+    OR $allow_eval_seed = TRUE
+)
+```
+
+`allow_eval_seed` 仅由 eval runner 启用（`tests/run_eval.py --allow-eval-seed`）。生产路径永远不传此参数。
 
 ### 2.7 Eval Metrics
 
@@ -360,6 +445,10 @@ python tests/run_eval.py --eval-set docs/eval_set.json --actor claude_mcp
 
 ## 4. 实施顺序
 
+Phase 1.0 的第一个完整闭环是 **M1 schema → M2 resolver → M3 review API**。三者共同构成 Memory Lifecycle closure。
+
+实施时仍然必须小步执行，每步单独验证：
+
 ### Phase 1.0 — Memory Lifecycle
 
 ```
@@ -368,6 +457,7 @@ M1 — memory_items schema only
   │   helper functions：insert_memory_item(), get_memory_item()
   │   不改变现有写入路径
   │   不改变检索逻辑
+  │   验收：\d memory_items + helper 可调用
   ▼
 M2 — candidate resolver
   │   resolve_candidate()
@@ -377,12 +467,16 @@ M2 — candidate resolver
   │   dual-write：memory_items + memories (compat)
   │   异步触发：digest / dream / 手动端点
   │   不改 retrieval
+  │   验收：user_direct auto_commit → memory_items + memories；assistant_inferred → pending
   ▼
 M3 — review queue API
       4 端点：list / view / commit / reject
       受 AdminAuthMiddleware 保护
       不做 UI
+      验收：API 4 端点均 200；commit → memory_items + memories
 ```
+
+**M1/M2/M3 全部完成后：暂停，观察真实数据一段时间（建议 1-2 周），确认 candidate 产生速率、resolver 行为、backlog 增长速度均符合预期，再进入 Phase 1.1。**
 
 ### Phase 1.1 — Retrieval Safety
 
@@ -493,6 +587,14 @@ plan → one small milestone → code → verify (SQL + API) → review → only
 
 每个 milestone 开始前 pg_dump。每个 milestone 结束后 commit + 验证。
 
+**Phase 1.0 结束后、Phase 1.1 开始前：暂停观察。** M1-M3 全部完成后，让系统在真实负载下运行 1-2 周，确认：
+- candidate 产生速率合理
+- resolver auto_commit / keep_pending 分流符合预期
+- assistant_inferred backlog 增长可管理
+- 旧 API / bot / Hermes 不受影响
+
+观察期通过后，再启动 Phase 1.1。
+
 ---
 
 ## 8. 文件改动预估
@@ -503,10 +605,10 @@ plan → one small milestone → code → verify (SQL + API) → review → only
 | M2 | `database.py`, `main.py` | +120 行（resolver + `POST /admin/resolve-candidates` + digest/dream 触发） |
 | M3 | `main.py` | +80 行（4 端点 + protected prefix） |
 | M4 | `database.py`, `main.py`, `bot.py` | +50 行（actor 参数 + SQL WHERE） |
-| M5 | `docs/eval_set.json`, `tests/run_eval.py` | +250 行 |
+| M5 | `docs/eval_set.json`, `tests/run_eval.py`, `scripts/seed_eval_data.py` | +350 行 |
 | M6 | `memory_extractor.py`, `database.py` | +50 行 |
 | M7 | `database.py`（或独立 config） | +30 行 |
-| **Total** | | **~630 行** |
+| **Total** | | **~730 行** |
 
 ---
 
