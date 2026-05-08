@@ -4300,6 +4300,7 @@ async def resolve_candidate(candidate_id: str) -> dict:
             )
 
             # 2. Insert into legacy memories (compat dual-write)
+            # WARN-B: use candidate.actor_scope, not hardcoded default
             legacy_id = await conn.fetchval(
                 """
                 INSERT INTO memories
@@ -4307,14 +4308,19 @@ async def resolve_candidate(candidate_id: str) -> dict:
                      memory_type, subject_key, predicate_key, confidence,
                      privacy_level, actor_scope, status, title)
                 VALUES ($1, $2, 'candidate_commit', $3, $4, $5, $6, $7, $8, $9,
-                        '{local_bot,claude_mcp}', 'active', '')
+                        $10, 'active', '')
                 RETURNING id
                 """,
                 rendered_text, importance, source_trust, source_event_ids,
                 memory_type, subject_key, predicate_key, confidence, privacy_level,
+                actor_scope,
             )
 
             # 3. Update candidate status
+            # WARN-C (Phase 1.2 tech debt): committed_memory_id currently stores
+            #   legacy memories.id (integer).  The forward link candidate →
+            #   memory_items is only available via memory_items.source_candidate_id.
+            #   Future: add committed_memory_item_id UUID and/or adjust semantics.
             await conn.execute(
                 """
                 UPDATE memory_candidates
