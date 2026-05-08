@@ -33,6 +33,7 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {_access_token}"} if _access_token 
 HERMES_ACTOR = "hermes_agent"
 HERMES_TRUST = "assistant_inferred"
 EXCLUDE_PRIVACY = "sealed,restricted"
+HERMES_CORE_WHITELIST = {"response_policy", "active_projects"}
 
 # ============================================================
 # Hermes MCP Server
@@ -293,11 +294,13 @@ async def hermes_get_context(query: str = "", search_limit: int = 10, recent_lim
             resp = await client.get(f"{GATEWAY_BASE}/core-blocks")
             data = resp.json()
 
-        blocks = data.get("blocks", [])
+        blocks = data.get("core_blocks", [])
         if blocks:
             parts = []
             for b in blocks:
                 bk = b.get("block_key", "")
+                if bk not in HERMES_CORE_WHITELIST:
+                    continue
                 ct = b.get("content_text", "")
                 if ct and ct.strip():
                     parts.append(f"[Core memory: {bk}]\n{ct.strip()}\n[/Core memory]")
