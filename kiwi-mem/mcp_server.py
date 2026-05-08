@@ -118,6 +118,11 @@ async def save_memory(content: str, title: str = "", importance: int = 5) -> str
                     "content": content.strip(),
                     "title": title.strip(),
                     "importance": importance,
+                    "source_trust": "assistant_inferred",
+                    "source_type": "mcp_agent",
+                    "actor": "claude_mcp",
+                    "memory_type": "legacy",
+                    "privacy_level": "personal",
                 },
             )
             data = resp.json()

@@ -120,6 +120,31 @@ async def get_db_pool() -> asyncpg.Pool:
     return _db_pool
 
 
+async def _log_access(query_text: str, core_block_keys: list, legacy_ids: list) -> None:
+    """M5.2：写 memory_access_log，fire-and-forget，失败不抛异常。"""
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_access_log
+                    (actor, query_text, intent, legacy_memory_ids, memory_ids,
+                     core_block_keys, retrieval_mode, session_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                "telegram_bot",
+                query_text,
+                "chat",
+                legacy_ids or [],
+                [],
+                core_block_keys or [],
+                "telegram_bot",
+                str(CHAT_ID),
+            )
+    except Exception:
+        pass  # logging 失败不能影响聊天回复
+
+
 async def init_db() -> None:
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -436,7 +461,27 @@ async def _process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     persona = await get_persona()
     base = (persona + "\n\n" + SYSTEM_PROMPT_RULES) if persona else SYSTEM_PROMPT_RULES
+
+    # M5.1：注入 active_projects core block（response_policy 已由 get_persona 注入）
+    injected_core_keys = ["response_policy"] if persona else []
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(
+                f"{KIWI_URL}/core-blocks/active_projects",
+                headers={"Authorization": f"Bearer {KIWI_TOKEN}"},
+            )
+            if r.status_code == 200:
+                ap = r.json().get("content_text", "").strip()
+                if ap:
+                    base = base + f"\n\n[Core memory: active_projects]\n{ap}\n[/Core memory]"
+                    injected_core_keys.append("active_projects")
+    except Exception:
+        pass  # 不存在则跳过，不报错
+
     system = ("\n".join(context_lines) + "\n\n" + base) if context_lines else base
+
+    # M5.2：access logging（fire-and-forget）
+    asyncio.create_task(_log_access(user_text, injected_core_keys, []))
 
     messages = [{"role": "system", "content": system}] + _history
 
@@ -446,7 +491,7 @@ async def _process_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             r = await c.post(
                 f"{KIWI_URL}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {KIWI_TOKEN}"},
-                json={"model": CHEAP_MODEL, "messages": messages},
+                json={"model": CHEAP_MODEL, "messages": messages, "skip_core_blocks": True},
             )
             r.raise_for_status()
             reply = r.json()["choices"][0]["message"]["content"]
