@@ -359,7 +359,7 @@ app = FastAPI(title="AI Memory Gateway", version="3.1.0", lifespan=lifespan)
 class AdminAuthMiddleware(BaseHTTPMiddleware):
     """当设置了 ACCESS_TOKEN 时，受保护端点需要认证"""
 
-    PROTECTED_PREFIXES = ("/admin/", "/admin/candidates", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks", "/hermes", "/events", "/candidates")
+    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks", "/hermes", "/events", "/candidates")
     
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -2691,7 +2691,7 @@ async def admin_list_candidates(
         return {
             "status": status,
             "count": len(results),
-            "candidates": results,
+            "candidates": [_serialize_candidate(r) for r in results],
         }
     except Exception as e:
         return {"error": str(e)}
@@ -2729,7 +2729,12 @@ async def admin_commit_candidate(candidate_id: str):
     try:
         result = await resolve_candidate(candidate_id, force_commit=True)
         if result["action"] == "error":
-            return JSONResponse(status_code=404, content=result)
+            err_reason = result.get("reason", "")
+            if "not found" in err_reason:
+                return JSONResponse(status_code=404, content=result)
+            if "already committed" in err_reason or "already rejected" in err_reason:
+                return JSONResponse(status_code=409, content=result)
+            return JSONResponse(status_code=400, content=result)
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -2753,6 +2758,14 @@ async def admin_reject_candidate(candidate_id: str, request: Request):
         except Exception:
             pass
         result = await reject_candidate(candidate_id, reason=reason)
+        action = result.get("action", "")
+        if action == "error":
+            err_reason = result.get("reason", "")
+            if "not found" in err_reason:
+                return JSONResponse(status_code=404, content=result)
+            if "already committed" in err_reason:
+                return JSONResponse(status_code=409, content=result)
+            return JSONResponse(status_code=400, content=result)
         return result
     except Exception as e:
         return {"error": str(e)}

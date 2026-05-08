@@ -4389,7 +4389,7 @@ async def list_candidates(
         SELECT candidate_id, status, memory_type, subject_key, predicate_key,
                rendered_text, source_trust, privacy_level, confidence,
                importance, created_at,
-               EXTRACT(DAY FROM NOW() - created_at)::int AS age_days,
+               (EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400)::int AS age_days,
                extractor_name, source_event_ids, actor_scope
         FROM memory_candidates
         WHERE {' AND '.join(where)}
@@ -4457,7 +4457,7 @@ async def reject_candidate(candidate_id: str, reason: Optional[str] = None) -> d
             WHERE candidate_id = $1
             """,
             candidate_id,
-            reason or "manual_reject",
+            "admin",
         )
         return {"action": "rejected",
                 "candidate_id": candidate_id,
