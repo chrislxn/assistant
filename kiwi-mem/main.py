@@ -47,6 +47,8 @@ from database import (
     append_event, create_candidate, auto_commit_candidate,
     # Phase 1.0 M1
     insert_memory_item, get_memory_item,
+    # Phase 1.0 M2
+    resolve_candidate,
     get_active_core_block, create_core_block_version, log_memory_access,
     migrate_persona_to_core_block,
 )
