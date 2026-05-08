@@ -18,7 +18,7 @@ import uuid
 import asyncio
 import hashlib
 import httpx
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +53,7 @@ from config import (
 )
 from memory_extractor import extract_memories
 from mcp_server import get_mcp_app, get_calendar_mcp_app, mcp_memory, mcp_calendar
+from hermes_mcp import get_hermes_mcp_app, mcp_hermes
 from web_search import web_search, format_results_for_prompt, get_engine_list
 from mcp_client import get_tools_for_servers, run_tool_call_loop, call_tool, call_tools_batch, clear_tool_cache
 
@@ -323,18 +324,23 @@ async def lifespan(app: FastAPI):
     else:
         print("ℹ️  记忆系统已关闭（设置 MEMORY_ENABLED=true 开启）")
     
-    # 启动 MCP session managers（v5.4：两个模块）
-    async with mcp_memory.session_manager.run():
-        async with mcp_calendar.session_manager.run():
-            print("✅ MCP server 已启动（/memory/mcp + /calendar/mcp）")
-            yield
-    
-    if digest_task:
-        digest_task.cancel()
-    if dream_check_task:
-        dream_check_task.cancel()
-    if MEMORY_ENABLED:
-        await close_pool()
+    # 启动 MCP session managers（v5.4：两个模块 + Hermes，用 AsyncExitStack 避免深嵌套）
+    mcp_stack = AsyncExitStack()
+    try:
+        await mcp_stack.enter_async_context(mcp_memory.session_manager.run())
+        await mcp_stack.enter_async_context(mcp_calendar.session_manager.run())
+        await mcp_stack.enter_async_context(mcp_hermes.session_manager.run())
+        print("✅ MCP server 已启动（/memory/mcp + /calendar/mcp + /hermes/mcp）")
+        yield
+    finally:
+        # 逆序关闭 session managers
+        await mcp_stack.aclose()
+        if digest_task:
+            digest_task.cancel()
+        if dream_check_task:
+            dream_check_task.cancel()
+        if MEMORY_ENABLED:
+            await close_pool()
 
 
 app = FastAPI(title="AI Memory Gateway", version="3.1.0", lifespan=lifespan)
@@ -347,7 +353,7 @@ app = FastAPI(title="AI Memory Gateway", version="3.1.0", lifespan=lifespan)
 class AdminAuthMiddleware(BaseHTTPMiddleware):
     """当设置了 ACCESS_TOKEN 时，受保护端点需要认证"""
 
-    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks")
+    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks", "/hermes", "/events", "/candidates")
     
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -2210,23 +2216,38 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
 # ============================================================
 
 @app.get("/debug/memories")
-async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, title: str = ""):
-    """查看和搜索记忆（支持分类筛选和 title 精确匹配）"""
+async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, title: str = "", exclude_privacy: str = ""):
+    """查看和搜索记忆（支持分类筛选、title 精确匹配、隐私级别排除）"""
     if not await get_memory_enabled():
         return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
 
     # 限制查询范围，防止过大请求消耗资源
     limit = max(1, min(limit, 200))
 
+    # 解析排除的隐私级别
+    excluded_levels = set()
+    if exclude_privacy:
+        for level in exclude_privacy.split(","):
+            level = level.strip()
+            if level:
+                excluded_levels.add(level)
+
     try:
         if title:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT * FROM memories WHERE title = $1 ORDER BY created_at DESC LIMIT $2",
-                    title, limit,
-                )
-            memories = [dict(r) for r in rows]
+                if excluded_levels:
+                    placeholders = ",".join(f"${i+3}" for i in range(len(excluded_levels)))
+                    rows = await conn.fetch(
+                        f"SELECT * FROM memories WHERE title = $1 AND (privacy_level IS NULL OR privacy_level NOT IN ({placeholders})) ORDER BY created_at DESC LIMIT $2",
+                        title, *excluded_levels, limit,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT * FROM memories WHERE title = $1 ORDER BY created_at DESC LIMIT $2",
+                        title, limit,
+                    )
+                memories = [dict(r) for r in rows]
         elif q:
             memories = await search_memories(q, limit=limit, track_recall=False)
             # 搜索结果如需按分类筛选
@@ -2234,7 +2255,14 @@ async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, 
                 memories = [m for m in memories if m.get("category_id") == category_id]
         else:
             memories = await get_recent_memories(limit=limit, category_id=category_id)
-        
+
+        # 隐私级别过滤（对 search 和 recent 路径生效）
+        if excluded_levels:
+            memories = [
+                m for m in memories
+                if m.get("privacy_level") not in excluded_levels
+            ]
+
         total = await get_all_memories_count()
         
         return {
@@ -2482,6 +2510,144 @@ async def add_memory_manual(request: Request):
             "title": title,
             "total": total,
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
+# Hermes 受限 Agent 专用端点
+# ============================================================
+
+@app.post("/events")
+async def post_event(request: Request):
+    """
+    写入 observation event（append-only，不写 memories）。
+
+    供受限 agent（如 Hermes）使用。调用 append_event() 写入 memory_events，
+    返回 event_id 供后续 propose_memory 引用。
+
+    请求体：
+    {
+        "content_text": "观察内容（必填）",
+        "event_type": "general_observation",
+        "source_type": "hermes_agent",
+        "source_trust": "assistant_inferred",
+        "actor": "hermes_agent",
+        "privacy_level": "personal",
+        "idempotency_key": "可选幂等键"
+    }
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        body = await request.json()
+        content_text = body.get("content_text", "")
+        if not content_text:
+            return JSONResponse(status_code=400, content={"error": "content_text 不能为空"})
+
+        event_id = await append_event(
+            event_type=body.get("event_type", "general_observation"),
+            source_trust=body.get("source_trust", "assistant_inferred"),
+            content_text=content_text,
+            source_type=body.get("source_type", "hermes_agent"),
+            actor=body.get("actor", "hermes_agent"),
+            privacy_level=body.get("privacy_level", "personal"),
+            idempotency_key=body.get("idempotency_key"),
+            payload_json=body.get("payload_json"),
+        )
+        return {"event_id": event_id, "status": "recorded"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/candidates")
+async def post_candidate(request: Request):
+    """
+    创建 memory_candidate（提案，不自动提交）。
+
+    供受限 agent（如 Hermes）使用。写入 memory_candidates 表，
+    status 强制为 'pending'（不自动提交）。
+
+    请求体：
+    {
+        "rendered_text": "记忆的自然语言表述（必填）",
+        "memory_type": "unknown",
+        "subject_key": "",
+        "predicate_key": "",
+        "importance": 5,
+        "confidence": 0.7,
+        "source_event_ids": [],
+        "source_trust": "assistant_inferred",
+        "extractor_name": "hermes_agent",
+        "extractor_version": "1.0",
+        "privacy_level": "personal"
+    }
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        body = await request.json()
+        rendered_text = body.get("rendered_text", "")
+        if not rendered_text:
+            return JSONResponse(status_code=400, content={"error": "rendered_text 不能为空"})
+
+        # 强制：外部 agent 的 source_trust=assistant_inferred 永远 pending
+        # create_candidate 内部根据 source_trust 分流：
+        #   user_direct / system_generated → pending_auto
+        #   assistant_inferred / 其他 → pending
+
+        candidate_id = await create_candidate(
+            rendered_text=rendered_text,
+            source_trust=body.get("source_trust", "assistant_inferred"),
+            extractor_name=body.get("extractor_name", "hermes_agent"),
+            source_event_ids=body.get("source_event_ids"),
+            memory_type=body.get("memory_type", "unknown"),
+            subject_key=body.get("subject_key", ""),
+            predicate_key=body.get("predicate_key", ""),
+            importance=body.get("importance", 5),
+            confidence=body.get("confidence", 0.7),
+            privacy_level=body.get("privacy_level", "personal"),
+            extractor_version=body.get("extractor_version", "0"),
+            canonical_value=body.get("canonical_value"),
+        )
+        return {"candidate_id": candidate_id, "status": "pending"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/events/access-log")
+async def post_access_log(request: Request):
+    """
+    写入 memory_access_log（供受限 agent 记录 context 检索审计）。
+
+    请求体：
+    {
+        "actor": "hermes_agent",
+        "retrieval_mode": "hermes_agent",
+        "intent": "hermes_context",
+        "query_text": "...",
+        "session_id": "uuid",
+        "core_block_keys": ["response_policy", "active_projects"]
+    }
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        body = await request.json()
+        await log_memory_access(
+            actor=body.get("actor", "hermes_agent"),
+            retrieval_mode=body.get("retrieval_mode", "hermes_agent"),
+            intent=body.get("intent", "hermes_context"),
+            query_text=body.get("query_text"),
+            session_id=body.get("session_id"),
+            core_block_keys=body.get("core_block_keys"),
+            legacy_memory_ids=body.get("legacy_memory_ids"),
+            memory_ids=body.get("memory_ids"),
+        )
+        return {"status": "logged"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -4895,10 +5061,15 @@ def _wrap_mcp(mcp_asgi_app):
 # ============================================================
 #
 # 记忆系统：/memory/mcp
-#   工具：search_memory, save_memory, get_recent, trigger_digest
+#   工具：search_memory, save_memory, get_recent, trigger_digest, lock_memory, unlock_memory
+# 日历+Dream：/calendar/mcp
+#   工具：get_day_page, get_calendar_range, save_calendar_page, 等 11 个
+# Hermes（受限 Agent）：/hermes/mcp
+#   工具：hermes_observe, hermes_propose_memory, hermes_search, hermes_get_recent, hermes_get_context
 
 app.mount("/memory", _wrap_mcp(get_mcp_app()))
 app.mount("/calendar", _wrap_mcp(get_calendar_mcp_app()))
+app.mount("/hermes", _wrap_mcp(get_hermes_mcp_app()))
 
 
 # ============================================================
