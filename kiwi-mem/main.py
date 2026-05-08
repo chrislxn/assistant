@@ -46,6 +46,7 @@ from database import (
     # v7.0 Phase 0.5
     append_event, create_candidate, auto_commit_candidate,
     get_active_core_block, create_core_block_version, log_memory_access,
+    migrate_persona_to_core_block,
 )
 from config import (
     get_all_config, set_config, get_config, get_config_int, get_config_bool,
@@ -297,7 +298,17 @@ async def lifespan(app: FastAPI):
                     print(f"📝 首次启动：写入了 {seeded} 个默认 prompt 到配置表")
             except Exception as e:
                 print(f"⚠️  默认 prompt 初始化失败: {e}")
-            
+
+            # M4.2：迁移 __BOT_PERSONA__ → core_blocks.response_policy（幂等）
+            try:
+                mig_result = await migrate_persona_to_core_block()
+                if mig_result["status"] == "migrated":
+                    print(f"🔀 M4.2：__BOT_PERSONA__ (id={mig_result['memory_id']}) → core_blocks.response_policy")
+                elif mig_result["status"] == "skipped":
+                    print(f"ℹ️  M4.2：{mig_result['reason']}")
+            except Exception as e:
+                print(f"⚠️  M4.2 迁移失败（不阻止启动）: {e}")
+
             # 启动每日记忆整理调度器
             from daily_digest import daily_digest_scheduler
             digest_task = asyncio.create_task(daily_digest_scheduler())
@@ -336,7 +347,7 @@ app = FastAPI(title="AI Memory Gateway", version="3.1.0", lifespan=lifespan)
 class AdminAuthMiddleware(BaseHTTPMiddleware):
     """当设置了 ACCESS_TOKEN 时，受保护端点需要认证"""
 
-    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp")
+    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks")
     
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -434,7 +445,7 @@ def replace_template_variables(text: str, context: dict = None) -> str:
 # 记忆注入
 # ============================================================
 
-async def build_system_prompt_with_memories(user_message: str, user_msg_count: int = 1, project_id: str = None) -> tuple:
+async def build_system_prompt_with_memories(user_message: str, user_msg_count: int = 1, project_id: str = None, skip_core_blocks: bool = False) -> tuple:
     """
     构建带记忆的 system prompt（v5.5 日历层级注入 + v5.8 项目注入 + 缓存优化）
     
@@ -454,8 +465,24 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
     """
     active_prompt = await get_active_system_prompt()
     prompt_meta = {}
-    
-    # ---- ① 用户画像（静态，一天不变）----
+
+    # ---- ① Core blocks 注入（白名单，可被 caller 跳过）----
+    injected_core_keys: list[str] = []
+    if not skip_core_blocks:
+        _CORE_BLOCK_KEYS = ["response_policy", "active_projects"]
+        injected_blocks: list[str] = []
+        for _bk in _CORE_BLOCK_KEYS:
+            try:
+                _cb = await get_active_core_block(_bk)
+                if _cb and _cb.strip():
+                    injected_blocks.append(f"[Core memory: {_bk}]\n{_cb.strip()}\n[/Core memory]")
+                    injected_core_keys.append(_bk)
+            except Exception:
+                pass
+        if injected_blocks:
+            active_prompt += "\n\n" + "\n\n".join(injected_blocks)
+
+    # ---- ② 用户画像（静态，一天不变）----
     try:
         user_profile = await get_config("user_profile")
         if user_profile:
@@ -463,16 +490,21 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
     except Exception as e:
         print(f"⚠️  用户画像读取失败: {e}")
     
+    injected_legacy_ids: list[int] = []
+
     if not await get_memory_enabled():
+        prompt_meta["_injected"] = {"core_block_keys": injected_core_keys, "legacy_memory_ids": []}
         return active_prompt, prompt_meta
     
     try:
-        # ---- ② 锁定记忆：全量注入（静态，很少变）----
+        # ---- ③ 锁定记忆：全量注入（静态，很少变）----
         from database import get_permanent_memories
         permanent = await get_permanent_memories()
         if permanent:
             perm_lines = []
             for mem in permanent:
+                if mem.get("id"):
+                    injected_legacy_ids.append(mem["id"])
                 title = mem.get("title", "")
                 content = mem.get("content", "")
                 if title:
@@ -483,7 +515,7 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
             active_prompt += f"\n\n【长期记忆（用户标记为重要）】\n{perm_text}"
             print(f"📌 注入了 {len(permanent)} 条锁定记忆")
         
-        # ---- ③ 日历层级注入（静态，一天内不变）----
+        # ---- ④ 日历层级注入（静态，一天内不变）----
         try:
             calendar_enabled = await get_config("calendar_inject_enabled")
             if calendar_enabled is None or str(calendar_enabled).lower() != 'false':
@@ -504,7 +536,7 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
         except Exception as e:
             print(f"⚠️  日历注入失败: {e}")
         
-        # ---- ④ 项目指令注入（静态，整个项目内不变）----
+        # ---- ⑤ 项目指令注入（静态，整个项目内不变）----
         if project_id:
             try:
                 from database import get_project_by_id
@@ -519,7 +551,7 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
         # 上面的人设+画像+锁定记忆+日历是静态的（一天内不变），下面的搜索碎片/犯困/切窗是动态的
         active_prompt += "\n\n<!-- CACHE_BOUNDARY -->"
         
-        # ---- ⑤ 语义搜索碎片（动态，每轮变化）----
+        # ---- ⑥ 语义搜索碎片（动态，每轮变化）----
         inject_limit = await get_max_inject()
         memories = await search_memories(user_message, limit=inject_limit, project_id=project_id)
         
@@ -539,6 +571,8 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
         if memories:
             memory_lines = []
             for mem in memories:
+                if mem.get("id") and mem["id"] not in injected_legacy_ids:
+                    injected_legacy_ids.append(mem["id"])
                 title = mem.get("title", "")
                 heat = mem.get("heat", 1.0)
                 date_tag = ""
@@ -655,11 +689,13 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
                             print(f"🔗 无缝切窗：摘要未就绪，降级注入原文（第 {user_msg_count}/{handoff_stop} 轮）")
         except Exception as e:
             print(f"⚠️  无缝切窗失败: {e}")
-        
+
+        prompt_meta["_injected"] = {"core_block_keys": injected_core_keys, "legacy_memory_ids": injected_legacy_ids}
         return active_prompt, prompt_meta
-        
+
     except Exception as e:
         print(f"⚠️  记忆检索失败: {e}，使用纯人设")
+        prompt_meta["_injected"] = {"core_block_keys": injected_core_keys, "legacy_memory_ids": injected_legacy_ids}
         return active_prompt, prompt_meta
 
 
@@ -1203,6 +1239,8 @@ async def chat_completions(request: Request):
     # ---------- 构建 system prompt ----------
     # 内部请求（如压缩上下文）可跳过人设注入
     skip_prompt = body.pop('skip_system_prompt', False)
+    # Bot 已自行注入 core_blocks，可跳过 kiwi-mem 侧注入
+    skip_core_blocks = body.pop('skip_core_blocks', False)
     
     # 读取前端传来的模板变量上下文
     template_ctx = {
@@ -1220,7 +1258,7 @@ async def chat_completions(request: Request):
         # v5.6：计算用户消息数（用于无缝切窗判断是第几轮）
         user_msg_count = sum(1 for m in messages if m.get('role') == 'user')
         if mem_enabled and user_message:
-            enhanced_prompt, prompt_meta = await build_system_prompt_with_memories(user_message, user_msg_count=user_msg_count, project_id=project_id)
+            enhanced_prompt, prompt_meta = await build_system_prompt_with_memories(user_message, user_msg_count=user_msg_count, project_id=project_id, skip_core_blocks=skip_core_blocks)
         else:
             # v5.4：即使记忆关闭，也从数据库优先读取 system prompt（降级到文件版本）
             enhanced_prompt = await get_active_system_prompt() or SYSTEM_PROMPT
@@ -1344,6 +1382,19 @@ async def chat_completions(request: Request):
     
     # ---------- 生成 session ID ----------
     session_id = str(uuid.uuid4())[:8]
+
+    # M5.2：记录上下文注入日志（fire-and-forget，失败不影响回复）
+    _inj = prompt_meta.get("_injected", {}) if not skip_prompt else {}
+    asyncio.create_task(log_memory_access(
+        actor="api_client",
+        retrieval_mode="chat_completions",
+        query_text=user_message or None,
+        intent="chat",
+        legacy_memory_ids=_inj.get("legacy_memory_ids", []),
+        memory_ids=[],
+        core_block_keys=_inj.get("core_block_keys", []),
+        session_id=session_id,
+    ))
     
     # 请求 LLM 在流式响应中包含 token 用量
     if body.get("stream"):
@@ -2389,17 +2440,24 @@ async def add_memory_manual(request: Request):
         title = body.get("title", "")
         category_id = body.get("category_id")
 
+        # 外部调用者（如 MCP）可通过请求体覆盖 provenance 字段
+        source_trust = body.get("source_trust", "user_direct")
+        source_type = body.get("source_type", "manual")
+        actor = body.get("actor", "user")
+        memory_type = body.get("memory_type", "legacy")
+        privacy_level = body.get("privacy_level", "personal")
+
         if not content:
             return JSONResponse(status_code=400, content={"error": "content 不能为空"})
 
         # M3.1：先写 memory_events，建立 provenance 链
         event_id = await append_event(
             event_type="manual_note",
-            source_trust="user_direct",
+            source_trust=source_trust,
             content_text=content,
-            source_type="manual",
-            actor="user",
-            privacy_level="personal",
+            source_type=source_type,
+            actor=actor,
+            privacy_level=privacy_level,
         )
 
         memory_id = await save_memory(
@@ -2409,8 +2467,10 @@ async def add_memory_manual(request: Request):
             title=title,
             category_id=category_id,
             source="user_explicit",
-            source_trust="user_direct",
+            source_trust=source_trust,
             source_event_ids=[event_id],
+            memory_type=memory_type,
+            privacy_level=privacy_level,
         )
         total = await get_all_memories_count()
         return {
@@ -2483,6 +2543,137 @@ async def clear_seed_memories():
             deleted = 0
         total = await get_all_memories_count()
         return {"status": "cleared", "deleted": deleted, "remaining": total}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
+# Core Blocks API — 版本化、审批控制的核心记忆管理
+# ============================================================
+
+@app.get("/core-blocks")
+async def list_core_blocks():
+    """列出所有 active approved core blocks"""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT block_key, version_no, content_text, char_limit,
+                       privacy_level, actor_scope, update_policy,
+                       approval_status, proposed_by, effective_from
+                FROM core_blocks
+                WHERE superseded_at IS NULL
+                  AND approval_status = 'approved'
+                ORDER BY block_key
+                """
+            )
+        return {
+            "core_blocks": [
+                {
+                    "block_key": r["block_key"],
+                    "version_no": r["version_no"],
+                    "content_text": r["content_text"],
+                    "char_limit": r["char_limit"],
+                    "privacy_level": r["privacy_level"],
+                    "actor_scope": r["actor_scope"],
+                    "update_policy": r["update_policy"],
+                    "approval_status": r["approval_status"],
+                    "proposed_by": r["proposed_by"],
+                    "effective_from": str(r["effective_from"]),
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/core-blocks/{block_key}")
+async def get_core_block(block_key: str):
+    """获取指定 block_key 的 active approved 版本"""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT block_key, version_no, content_text, char_limit,
+                       privacy_level, actor_scope, update_policy,
+                       approval_status, proposed_by, effective_from
+                FROM core_blocks
+                WHERE block_key = $1
+                  AND superseded_at IS NULL
+                  AND approval_status = 'approved'
+                ORDER BY version_no DESC
+                LIMIT 1
+                """,
+                block_key,
+            )
+        if row is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"core block '{block_key}' 不存在或未审批"},
+            )
+        return {
+            "block_key": row["block_key"],
+            "version_no": row["version_no"],
+            "content_text": row["content_text"],
+            "char_limit": row["char_limit"],
+            "privacy_level": row["privacy_level"],
+            "actor_scope": row["actor_scope"],
+            "update_policy": row["update_policy"],
+            "approval_status": row["approval_status"],
+            "proposed_by": row["proposed_by"],
+            "effective_from": str(row["effective_from"]),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/core-blocks/{block_key}")
+async def create_core_block(block_key: str, request: Request):
+    """
+    创建 core block 新版本（调用 create_core_block_version，不原地覆盖）。
+    重复 POST 同一 block_key 会产生新版本，旧版本 superseded_at=NOW()。
+    请求体：{"content_text": "...", "privacy_level": "personal", ...}
+    """
+    try:
+        body = await request.json()
+        content_text = body.get("content_text", "")
+        if not content_text:
+            return JSONResponse(status_code=400, content={"error": "content_text 不能为空"})
+
+        privacy_level = body.get("privacy_level", "personal")
+        char_limit = body.get("char_limit", 2000)
+        proposed_by = body.get("proposed_by", "admin_api")
+        update_policy = body.get("update_policy", "approval_required")
+        actor_scope = body.get("actor_scope")
+
+        block_id = await create_core_block_version(
+            block_key=block_key,
+            content_text=content_text,
+            proposed_by=proposed_by,
+            auto_approve=True,
+            char_limit=char_limit,
+            privacy_level=privacy_level,
+            actor_scope=actor_scope,
+            update_policy=update_policy,
+        )
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            version_no = await conn.fetchval(
+                "SELECT version_no FROM core_blocks WHERE block_id = $1", block_id
+            )
+
+        return {
+            "status": "created",
+            "block_key": block_key,
+            "block_id": block_id,
+            "version_no": version_no,
+            "content_text": content_text,
+        }
     except Exception as e:
         return {"error": str(e)}
 

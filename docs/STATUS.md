@@ -1,22 +1,23 @@
 # STATUS — 最后更新：2026-05-08
 
 ## 当前阶段
-Phase 0.5（M1–M4 完成，进入 M5）
+Phase 0.5（M1–M5 完成，进入 M6）
 
 ## 已完成
 - ✅ M1：4 张新表 + memories 8 列扩展 + source_trust 回填（117 条）
 - ✅ M2：6 个新函数；save_memory() 扩展 source_trust / source_event_ids / privacy_level / memory_type
-- ✅ M3.1：POST /debug/memories 手动保存路径，已验证
-- ✅ M3.2：POST /data/health 健康数据路径，已验证
-- ✅ M3.3：AI 自动提取路径（process_memories_background），已验证
+- ✅ M3.1：POST /debug/memories 手动保存路径
+- ✅ M3.2：POST /data/health 健康数据路径
+- ✅ M3.3：AI 自动提取路径（process_memories_background）
 - ✅ M4.1：core-blocks CRUD API（GET /core-blocks、GET /core-blocks/{key}、POST /core-blocks/{key}）
 - ✅ M4.2：__BOT_PERSONA__ → core_blocks.response_policy 启动迁移（幂等）
 - ✅ M4.3：get_persona() 改为优先读 core_blocks.response_policy，fallback memories
+- ✅ M5.1：context injection 加入 core_blocks（白名单：response_policy + active_projects）
+- ✅ M5.2：memory_access_log 写入（api_client + telegram_bot 双入口）
 
 ## 下一步（按顺序）
-1. **M5** — main.py：context injection 加入 core_blocks + log_memory_access
-2. **M6** — mcp_server.py：source_trust='assistant_inferred' + create_candidate
-3. 回归验证 + 验收标准检测
+1. **M6** — mcp_server.py：source_trust='assistant_inferred' + create_candidate
+2. 回归验证 + 验收标准检测
 
 ## 关键决策记录
 - memory_candidates 纳入 Phase 0.5，assistant_inferred → pending 不自动提交
@@ -28,6 +29,10 @@ Phase 0.5（M1–M4 完成，进入 M5）
 - create_core_block_version() 新增 approved_by 参数
 - __BOT_PERSONA__ 迁移后标记 archived + core_legacy，不删除
 - get_persona() 读 core_blocks 优先，5 分钟 TTL 缓存不变
+- context injection 白名单：response_policy + active_projects；test.block / health_baseline / relationship_context 不注入
+- bot 传 skip_core_blocks=True 避免 kiwi-mem 侧重复注入
+- logging fire-and-forget；失败 catch + warning，不影响聊天回复
+- bot 侧 legacy_memory_ids 暂传空数组（HTTP API 返回格式化文本，无 IDs）
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件

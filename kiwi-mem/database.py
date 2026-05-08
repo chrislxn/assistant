@@ -3971,6 +3971,7 @@ async def create_core_block_version(
     content_text: str,
     *,
     proposed_by: str = "system",
+    approved_by: Optional[str] = None,
     auto_approve: bool = False,
     char_limit: int = 2000,
     privacy_level: str = "personal",
@@ -4014,15 +4015,66 @@ async def create_core_block_version(
                 INSERT INTO core_blocks
                     (block_key, version_no, content_text, char_limit,
                      privacy_level, actor_scope, update_policy,
-                     approval_status, proposed_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     approval_status, proposed_by, approved_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING block_id
                 """,
                 block_key, new_ver, content_text, char_limit,
                 privacy_level, scope, update_policy,
-                approval, proposed_by,
+                approval, proposed_by, approved_by,
             )
     return block_id
+
+
+async def migrate_persona_to_core_block():
+    """
+    将 __BOT_PERSONA__ 记忆迁移到 core_blocks.response_policy。
+    幂等：response_policy active block 已存在则跳过；__BOT_PERSONA__ 不存在也跳过。
+    迁移后将原记忆标记为 archived + core_legacy，不删除。
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            """
+            SELECT 1 FROM core_blocks
+            WHERE block_key = 'response_policy'
+              AND superseded_at IS NULL
+              AND approval_status = 'approved'
+            LIMIT 1
+            """
+        )
+        if existing:
+            return {"status": "skipped", "reason": "response_policy active block already exists"}
+
+        row = await conn.fetchrow(
+            """
+            SELECT id, content FROM memories
+            WHERE title = '__BOT_PERSONA__'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        if not row:
+            return {"status": "skipped", "reason": "__BOT_PERSONA__ not found"}
+
+        await create_core_block_version(
+            block_key="response_policy",
+            content_text=row["content"],
+            proposed_by="migration",
+            approved_by="migration",
+            auto_approve=True,
+        )
+
+        await conn.execute(
+            """
+            UPDATE memories
+            SET status = 'archived', memory_type = 'core_legacy'
+            WHERE title = '__BOT_PERSONA__'
+              AND status = 'active'
+            """
+        )
+
+        return {"status": "migrated", "memory_id": row["id"]}
 
 
 async def log_memory_access(
