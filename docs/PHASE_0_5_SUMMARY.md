@@ -2,6 +2,7 @@
 
 > 封版日期：2026-05-08
 > 状态：**completed / sealed**
+> Post Phase 0.5：Hermes conservative integration **completed**（tag: `phase-0.5-hermes-conservative`）
 > 下一阶段：Phase 1 planning（尚未开始）
 
 ---
@@ -300,3 +301,60 @@ Phase 1 推荐按以下优先级推进（**尚未开始**）：
 - WeChat 全量导入
 - 多 agent 自主写权限
 - 从聊天历史 fine-tune 模型
+
+---
+
+## 8. Post Phase 0.5 Update — Hermes Conservative Integration
+
+> 完成日期：2026-05-08
+> Tag：`phase-0.5-hermes-conservative`
+> 状态：**completed**（security review 7 PASS / 1 WARN → WARN 已修复）
+
+### Overview
+
+在 Phase 0.5 封版后，新增 Hermes 受限 Agent 接入层。Hermes 是一个权限远低于主 MCP agent (claude_mcp) 的外部 agent，通过独立的 MCP 模块接入，所有读写路径受限于保守的 security 规则。
+
+### Hermes 5 Restricted Tools
+
+| 工具 | 职责 | 写入目标 |
+|------|------|---------|
+| `hermes_observe` | 写入观察事件 | `memory_events`（append-only） |
+| `hermes_propose_memory` | 提案长期记忆候选 | `memory_candidates`（status=pending） |
+| `hermes_search` | 搜索记忆 | 只读（排除 sealed/restricted） |
+| `hermes_get_recent` | 获取最近记忆 | 只读（排除 sealed/restricted） |
+| `hermes_get_context` | 获取完整上下文 | 只读 + 写 access log |
+
+### Core Block Whitelist
+
+- Hermes get_context 默认注入 whitelist：**response_policy + active_projects**
+- Hermes **不注入**所有 approved core_blocks
+- health_baseline / relationship_context / test.block 不在 default Hermes context
+- 未来如需健康上下文，应新增 `hermes_get_health_context` 或 intent='health' 专用路径，而非扩展默认 whitelist
+
+### Provenance Enforcement
+
+- 所有 Hermes 写入由 `hermes_mcp.py` 硬编码 provenance：
+  - `source_trust='assistant_inferred'`
+  - `actor='hermes_agent'`
+  - `source_type='hermes_agent'`
+- Hermes 不直接写 committed memories（无 save_memory 路径）
+- Hermes 不直接写 core_blocks（无 POST /core-blocks 路径）
+
+### New REST Endpoints
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/events` | POST | 写 memory_events（append_only） |
+| `/candidates` | POST | 写 memory_candidates（status=pending） |
+| `/events/access-log` | POST | 写 memory_access_log（审计） |
+
+### Existing Endpoint Extension
+
+- `GET /debug/memories` 新增 `exclude_privacy` 参数，支持排除 sealed/restricted
+
+### Security
+
+- 所有新端点受 `AdminAuthMiddleware` 保护（需要 ACCESS_TOKEN）
+- Privacy filter（exclude sealed/restricted）hardcoded 在 Hermes tools
+- Core block whitelist 镜像 main chat path 白名单
+- 6/6 verification pass + security review 通过
