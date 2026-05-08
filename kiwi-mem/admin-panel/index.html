@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kiwi-Mem Admin</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        kiwi: { 50:'#f0fdf4', 100:'#dcfce7', 200:'#bbf7d0', 300:'#86efac', 400:'#4ade80', 500:'#22c55e', 600:'#16a34a', 700:'#15803d', 800:'#166534', 900:'#14532d' },
+        panel: { bg:'#0f1117', card:'#1a1d27', border:'#2a2d3a', hover:'#252836', input:'#1e2130' }
+      }
+    }
+  }
+}
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .tab-active { background: rgba(34,197,94,0.1); color: #4ade80; border-right: 2px solid #4ade80; }
+  .stat-card { transition: transform 0.15s; }
+  .stat-card:hover { transform: translateY(-2px); }
+  .fade-in { animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+  textarea, input[type=text], input[type=number], input[type=password], select {
+    background: #1e2130; border: 1px solid #2a2d3a; color: #e2e8f0; border-radius: 6px; padding: 8px 12px; width: 100%; outline: none;
+  }
+  textarea:focus, input:focus, select:focus { border-color: #4ade80; }
+  .btn { padding: 8px 16px; border-radius: 6px; font-size: 14px; cursor: pointer; transition: all 0.15s; border: none; }
+  .btn-primary { background: #22c55e; color: #fff; } .btn-primary:hover { background: #16a34a; }
+  .btn-secondary { background: #2a2d3a; color: #e2e8f0; } .btn-secondary:hover { background: #353849; }
+  .btn-danger { background: #dc2626; color: #fff; } .btn-danger:hover { background: #b91c1c; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .toast { position:fixed; top:20px; right:20px; padding:12px 20px; border-radius:8px; color:#fff; z-index:9999; animation:fadeIn 0.3s; }
+  .toast-ok { background:#16a34a; } .toast-err { background:#dc2626; }
+  .section-title { font-size:13px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px; }
+  .config-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid #1e2130; }
+  .config-label { flex:0 0 220px; font-size:14px; color:#cbd5e1; }
+  .config-value { flex:1; }
+  .memory-card { background:#1e2130; border:1px solid #2a2d3a; border-radius:8px; padding:14px; margin-bottom:8px; }
+  .memory-card:hover { border-color:#353849; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; }
+  .imp-high { background:rgba(168,85,247,0.15); color:#c084fc; }
+  .imp-mid { background:rgba(96,165,250,0.15); color:#60a5fa; }
+  .imp-low { background:rgba(74,222,128,0.15); color:#4ade80; }
+  .loading { display:inline-block; width:16px; height:16px; border:2px solid #2a2d3a; border-top:2px solid #4ade80; border-radius:50%; animation:spin 0.6s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .accordion-body { max-height:0; overflow:hidden; transition:max-height 0.3s ease; }
+  .accordion-body.open { max-height:2000px; }
+  ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:#0f1117; } ::-webkit-scrollbar-thumb { background:#2a2d3a; border-radius:3px; }
+</style>
+</head>
+<body class="bg-panel-bg text-gray-200 min-h-screen flex">
+
+<!-- ===== Sidebar ===== -->
+<nav id="sidebar" class="w-56 bg-panel-card border-r border-panel-border flex flex-col h-screen sticky top-0 shrink-0">
+  <div class="px-5 py-5 border-b border-panel-border">
+    <h1 class="text-lg font-semibold">🥝 Kiwi-Mem</h1>
+    <p class="text-xs text-gray-500 mt-1">Admin Panel</p>
+  </div>
+  <div class="flex-1 py-3">
+    <a onclick="switchTab('dashboard')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="dashboard">📊 仪表盘</a>
+    <a onclick="switchTab('config')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="config">⚙️ 配置管理</a>
+    <a onclick="switchTab('providers')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="providers">🔑 供应商</a>
+    <a onclick="switchTab('memories')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="memories">🧠 记忆</a>
+    <a onclick="switchTab('prompt')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="prompt">📝 人设</a>
+    <a onclick="switchTab('tools')" class="tab-btn block px-5 py-2.5 text-sm cursor-pointer hover:bg-panel-hover" data-tab="tools">🛠️ 工具</a>
+  </div>
+  <div class="px-5 py-4 border-t border-panel-border">
+    <p class="text-xs text-gray-600">kiwi-mem</p>
+  </div>
+</nav>
+
+<!-- ===== Main Content ===== -->
+<main class="flex-1 p-8 overflow-y-auto h-screen">
+
+  <!-- ── Dashboard ── -->
+  <div id="tab-dashboard" class="tab-content fade-in">
+    <h2 class="text-xl font-semibold mb-6">📊 仪表盘</h2>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div class="stat-card bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="text-xs text-gray-500 mb-1">记忆总数</p>
+        <p id="stat-memories" class="text-2xl font-bold text-kiwi-400">-</p>
+      </div>
+      <div class="stat-card bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="text-xs text-gray-500 mb-1">锁定记忆</p>
+        <p id="stat-locked" class="text-2xl font-bold text-purple-400">-</p>
+      </div>
+      <div class="stat-card bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="text-xs text-gray-500 mb-1">供应商</p>
+        <p id="stat-providers" class="text-2xl font-bold text-blue-400">-</p>
+      </div>
+      <div class="stat-card bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="text-xs text-gray-500 mb-1">记忆系统</p>
+        <p id="stat-mem-enabled" class="text-2xl font-bold">-</p>
+      </div>
+    </div>
+
+    <div class="bg-panel-card border border-panel-border rounded-lg p-5 mb-4">
+      <p class="section-title">系统状态</p>
+      <div id="sys-status" class="text-sm text-gray-400">加载中…</div>
+      <div id="embed-status" class="text-sm mt-3 hidden"></div>
+    </div>
+
+    <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+      <p class="section-title">最近记忆</p>
+      <div id="recent-memories" class="text-sm text-gray-400">加载中…</div>
+    </div>
+  </div>
+
+  <!-- ── Config ── -->
+  <div id="tab-config" class="tab-content fade-in hidden">
+    <h2 class="text-xl font-semibold mb-2">⚙️ 配置管理</h2>
+    <p class="text-sm text-gray-500 mb-6">修改后即时生效，不需要重启服务。</p>
+    <div id="config-area" class="text-sm text-gray-400">加载中…</div>
+  </div>
+
+  <!-- ── Providers ── -->
+  <div id="tab-providers" class="tab-content fade-in hidden">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-xl font-semibold">🔑 供应商管理</h2>
+      <button class="btn btn-primary" onclick="showAddProvider()">+ 添加供应商</button>
+    </div>
+    <div id="provider-form" class="bg-panel-card border border-panel-border rounded-lg p-5 mb-6 hidden">
+      <p class="section-title" id="provider-form-title">添加供应商</p>
+      <input type="hidden" id="pf-id">
+      <div class="grid grid-cols-2 gap-4 mb-4">
+        <div><label class="text-xs text-gray-500 block mb-1">名称</label><input type="text" id="pf-name" placeholder="OpenRouter"></div>
+        <div><label class="text-xs text-gray-500 block mb-1">API Key</label><input type="password" id="pf-key" placeholder="sk-..."></div>
+      </div>
+      <div class="mb-4"><label class="text-xs text-gray-500 block mb-1">API Base URL</label><input type="text" id="pf-url" placeholder="https://openrouter.ai/api/v1/chat/completions"></div>
+      <div class="flex gap-2">
+        <button class="btn btn-primary" onclick="saveProvider()">保存</button>
+        <button class="btn btn-secondary" onclick="hideProviderForm()">取消</button>
+      </div>
+    </div>
+    <div id="providers-list" class="text-sm text-gray-400">加载中…</div>
+  </div>
+
+  <!-- ── Memories ── -->
+  <div id="tab-memories" class="tab-content fade-in hidden">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-xl font-semibold">🧠 记忆浏览</h2>
+      <div class="flex gap-2">
+        <input type="text" id="mem-search" placeholder="搜索记忆…" class="w-64" onkeydown="if(event.key==='Enter')searchMemories()">
+        <button class="btn btn-secondary" onclick="searchMemories()">搜索</button>
+      </div>
+    </div>
+    <div class="flex gap-2 mb-4">
+      <select id="mem-sort" class="w-40" onchange="loadMemories()">
+        <option value="recent">最近创建</option>
+        <option value="importance">按重要度</option>
+        <option value="heat">按热度</option>
+      </select>
+      <select id="mem-importance" class="w-32" onchange="loadMemories()">
+        <option value="">全部重要度</option>
+        <option value="9">9-10 核心</option>
+        <option value="7">7-8 重要</option>
+        <option value="5">5-6 普通</option>
+        <option value="1">1-4 低</option>
+      </select>
+    </div>
+    <div id="memories-list" class="text-sm text-gray-400">加载中…</div>
+    <div class="flex justify-center mt-4 gap-2" id="mem-pagination"></div>
+  </div>
+
+  <!-- ── System Prompt ── -->
+  <div id="tab-prompt" class="tab-content fade-in hidden">
+    <h2 class="text-xl font-semibold mb-2">📝 人设编辑</h2>
+    <p class="text-sm text-gray-500 mb-4">修改后立即对新对话生效。支持模板变量：{cur_datetime}、{user_name}、{assistant_name} 等。</p>
+    <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+      <textarea id="prompt-editor" rows="20" class="font-mono text-sm" placeholder="加载中…"></textarea>
+      <div class="flex gap-2 mt-4">
+        <button class="btn btn-primary" onclick="savePrompt()">保存人设</button>
+        <span id="prompt-status" class="text-sm text-gray-500 leading-9"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tools ── -->
+  <div id="tab-tools" class="tab-content fade-in hidden">
+    <h2 class="text-xl font-semibold mb-6">🛠️ 工具</h2>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- Dream -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">🌙 Dream 记忆整合</p>
+        <p class="text-xs text-gray-500 mb-4">触发 AI 的"睡眠"——整理碎片、合并记忆、产生前瞻。</p>
+        <div id="dream-status" class="text-sm text-gray-400 mb-3"></div>
+        <button class="btn btn-primary" onclick="triggerDream()">开始 Dream</button>
+      </div>
+
+      <!-- Daily Digest -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">📅 每日整理</p>
+        <p class="text-xs text-gray-500 mb-4">从今天的聊天记录生成日页面，更新日历和用户画像。</p>
+        <div class="flex gap-2">
+          <input type="date" id="digest-date" class="w-40">
+          <button class="btn btn-primary" onclick="triggerDigest()">执行整理</button>
+        </div>
+      </div>
+
+      <!-- Extract -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">🧩 手动提取记忆</p>
+        <p class="text-xs text-gray-500 mb-4">立即从最近对话中提取记忆碎片，不等自动轮次。</p>
+        <button class="btn btn-secondary" onclick="triggerExtract()">立即提取</button>
+      </div>
+
+      <!-- Seed Import -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">📦 导入预置记忆</p>
+        <p class="text-xs text-gray-500 mb-4">从 seed_memories.py 导入预置记忆条目。</p>
+        <button class="btn btn-secondary" onclick="triggerSeed()">导入</button>
+      </div>
+
+      <!-- Backup -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">💾 数据备份</p>
+        <p class="text-xs text-gray-500 mb-4">导出所有对话、记忆、配置为 zip 文件。</p>
+        <button class="btn btn-secondary" onclick="downloadBackup()">下载备份</button>
+      </div>
+
+      <!-- Embedding Migration -->
+      <div class="bg-panel-card border border-panel-border rounded-lg p-5">
+        <p class="font-semibold mb-1">🔄 向量迁移</p>
+        <p class="text-xs text-gray-500 mb-4">为缺少向量的记忆补充 embedding（更换模型后使用）。</p>
+        <button class="btn btn-secondary" onclick="triggerMigrate()">开始迁移</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ============================================================
+// API Base & Auth
+// ============================================================
+const API = window.location.origin;
+let TOKEN = localStorage.getItem('kiwi_admin_token') || '';
+
+function authHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (TOKEN) h['Authorization'] = `Bearer ${TOKEN}`;
+  return h;
+}
+
+async function api(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = TOKEN && !opts.headers?.Authorization ? `${API}${path}${sep}token=${TOKEN}` : `${API}${path}`;
+  const res = await fetch(url, { headers: authHeaders(), ...opts });
+  if (res.status === 401) {
+    TOKEN = prompt('请输入 ACCESS_TOKEN：') || '';
+    localStorage.setItem('kiwi_admin_token', TOKEN);
+    return api(path, opts);
+  }
+  if (res.status >= 500) {
+    throw new Error(`服务器错误 (${res.status})，请检查后端日志`);
+  }
+  return res;
+}
+
+async function apiJson(path, opts) {
+  const res = await api(path, opts);
+  const data = await res.json();
+  return data;
+}
+
+// ============================================================
+// Toast
+// ============================================================
+function toast(msg, ok = true) {
+  const el = document.createElement('div');
+  el.className = `toast ${ok ? 'toast-ok' : 'toast-err'}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ============================================================
+// Tab Switching
+// ============================================================
+let currentTab = 'dashboard';
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('tab-active'));
+  document.getElementById(`tab-${tab}`).classList.remove('hidden');
+  document.querySelector(`[data-tab="${tab}"]`).classList.add('tab-active');
+  currentTab = tab;
+
+  // lazy load
+  if (tab === 'dashboard') loadDashboard();
+  if (tab === 'config') loadConfig();
+  if (tab === 'providers') loadProviders();
+  if (tab === 'memories') loadMemories();
+  if (tab === 'prompt') loadPrompt();
+  if (tab === 'tools') loadDreamStatus();
+}
+
+// ============================================================
+// Dashboard
+// ============================================================
+async function loadDashboard() {
+  try {
+    // Status
+    const status = await apiJson('/');
+    document.getElementById('stat-memories').textContent = status.memories ?? '-';
+    document.getElementById('stat-mem-enabled').textContent = status.memory_enabled ? '✅ 开启' : '❌ 关闭';
+    document.getElementById('stat-mem-enabled').className = `text-2xl font-bold ${status.memory_enabled ? 'text-kiwi-400' : 'text-red-400'}`;
+
+    const statusLines = [
+      `版本：${escHtml(status.version || '-')}`,
+      `默认模型：${escHtml(status.default_model || '-')}`,
+      `记忆提取间隔：每 ${escHtml(String(status.extract_interval ?? '-'))} 轮`,
+    ];
+    document.getElementById('sys-status').innerHTML = statusLines.map(l => `<p class="py-1">${l}</p>`).join('');
+  } catch(e) {
+    document.getElementById('sys-status').textContent = '无法连接到后端：' + e.message;
+  }
+
+  try {
+    const providers = await apiJson('/admin/providers');
+    document.getElementById('stat-providers').textContent = providers.providers?.length ?? 0;
+  } catch(e) {
+    document.getElementById('stat-providers').textContent = '?';
+  }
+
+  try {
+    const mems = await apiJson('/debug/memories?limit=100');
+    const total = mems.total_memories ?? mems.memories?.length ?? 0;
+    const locked = mems.memories?.filter(m => m.is_permanent).length ?? 0;
+    document.getElementById('stat-memories').textContent = total;
+    document.getElementById('stat-locked').textContent = locked;
+
+    // Recent 5
+    const recent = (mems.memories || []).slice(0, 5);
+    if (recent.length === 0) {
+      document.getElementById('recent-memories').innerHTML = '<p class="text-gray-500">还没有记忆。</p>';
+    } else {
+      document.getElementById('recent-memories').innerHTML = recent.map(m =>
+        `<div class="py-2 border-b border-panel-border last:border-0">
+          <span class="text-gray-300">${escHtml(m.title || m.content?.slice(0, 60) || '#'+m.id)}</span>
+          <span class="badge ${m.importance >= 8 ? 'imp-high' : m.importance >= 5 ? 'imp-mid' : 'imp-low'} ml-2">${m.importance}</span>
+          ${m.is_permanent ? '<span class="badge imp-high ml-1">🔒</span>' : ''}
+        </div>`
+      ).join('');
+    }
+  } catch(e) {}
+
+  // Embedding 覆盖率
+  try {
+    const embed = await apiJson('/admin/embedding-stats');
+    const el = document.getElementById('embed-status');
+    if (embed && !embed.error && embed.total_memories > 0) {
+      el.classList.remove('hidden');
+      if (embed.without_embedding > 0) {
+        el.innerHTML = `<span style="color:#fb923c">⚠️ 向量覆盖 ${embed.coverage} — ${embed.without_embedding} 条记忆缺少 embedding，语义搜索可能不完整。</span>
+          <br><span class="text-gray-500 text-xs">前往「配置管理 → 默认模型」设置 embedding 模型，然后在「工具」页面点击「向量迁移」。</span>`;
+      } else {
+        el.innerHTML = `<span style="color:#4ade80">✅ 向量覆盖 ${embed.coverage} — 所有记忆已嵌入</span>`;
+      }
+    }
+  } catch(e) {}
+}
+
+// ============================================================
+// Config
+// ============================================================
+const CONFIG_GROUPS = {
+  '基础设置': ['memory_enabled','extract_interval','max_inject','semantic_threshold','dedup_threshold'],
+  '默认模型': ['default_chat_model','default_title_model','default_memory_model','default_digest_model','default_embedding_model','default_compress_model','dream_model','handoff_summary_model'],
+  '热度系统': ['heat_half_life_normal','heat_half_life_important','heat_recall_extend','heat_threshold_high','heat_threshold_medium','heat_importance_line','heat_emotion_line','heat_medium_truncate'],
+  '自动锁定': ['autolock_access_count','autolock_diversity','autolock_emo_access','autolock_emo_diversity'],
+  'Dream 睡眠': ['dream_drowsy_threshold','last_dream_date'],
+  '对话衔接': ['handoff_enabled','handoff_msg_count','handoff_stop_rounds'],
+  '日历注入': ['calendar_inject_enabled'],
+  'Prompt 缓存': ['prompt_cache_enabled'],
+  '联网搜索': ['search_engine','search_api_key','search_max_results'],
+  '提示词模板': ['prompt_memory_extract','prompt_daily_digest','prompt_daily_digest_page','prompt_weekly_summary','prompt_monthly_summary','prompt_period_summary','prompt_dream','prompt_compress','prompt_title_summary','prompt_user_profile','prompt_handoff_summary'],
+};
+
+let configData = {};
+
+async function loadConfig() {
+  try {
+    const data = await apiJson('/admin/config');
+    configData = data;
+    renderConfig(data);
+  } catch(e) {
+    document.getElementById('config-area').innerHTML = `<p class="text-red-400">加载失败：${e.message}</p>`;
+  }
+}
+
+function renderConfig(data) {
+  const allKeys = new Set(Object.keys(data));
+  let html = '';
+
+  for (const [group, keys] of Object.entries(CONFIG_GROUPS)) {
+    const items = keys.filter(k => data[k]);
+    if (items.length === 0) continue;
+
+    html += `<div class="bg-panel-card border border-panel-border rounded-lg p-5 mb-4">
+      <p class="section-title">${group}</p>`;
+
+    for (const key of items) {
+      const cfg = data[key];
+      const label = cfg.label || key;
+      const val = cfg.value || '';
+      const type = cfg.type || 'text';
+      allKeys.delete(key);
+
+      if (type === 'bool') {
+        html += `<div class="config-row">
+          <span class="config-label">${label}</span>
+          <div class="config-value">
+            <select id="cfg-${key}" onchange="saveConfig('${key}', this.value)">
+              <option value="true" ${val==='true'?'selected':''}>开启</option>
+              <option value="false" ${val!=='true'?'selected':''}>关闭</option>
+            </select>
+          </div>
+        </div>`;
+      } else if (key.startsWith('prompt_')) {
+        html += `<div class="config-row">
+          <span class="config-label">${label}</span>
+          <div class="config-value">
+            <button class="btn btn-sm btn-secondary" onclick="editPromptConfig('${key}', '${escAttr(label)}')">编辑</button>
+            <span class="text-xs text-gray-500 ml-2">${val ? val.slice(0,40)+'…' : '（空）'}</span>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="config-row">
+          <span class="config-label">${label}</span>
+          <div class="config-value flex gap-2">
+            <input type="${type==='int'||type==='float'?'number':'text'}" id="cfg-${key}" value="${escAttr(val)}"
+              ${type==='int'?'step="1"':''} ${type==='float'?'step="0.01"':''}
+              class="flex-1">
+            <button class="btn btn-sm btn-secondary" onclick="saveConfig('${key}', document.getElementById('cfg-${key}').value)">保存</button>
+          </div>
+        </div>`;
+      }
+    }
+    html += '</div>';
+  }
+
+  document.getElementById('config-area').innerHTML = html;
+}
+
+async function saveConfig(key, value) {
+  try {
+    await api(`/admin/config/${key}`, { method: 'PUT', body: JSON.stringify({ value }) });
+    toast(`✅ ${key} 已更新`);
+  } catch(e) {
+    toast(`❌ 更新失败：${e.message}`, false);
+  }
+}
+
+function editPromptConfig(key, label) {
+  const val = configData[key]?.value || '';
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 bg-black/60 flex items-center justify-center z-50';
+  modal.innerHTML = `
+    <div class="bg-panel-card border border-panel-border rounded-xl p-6 w-[700px] max-h-[80vh] flex flex-col">
+      <p class="font-semibold mb-3">${label}</p>
+      <textarea id="modal-prompt" rows="18" class="font-mono text-xs flex-1 mb-4">${escHtml(val)}</textarea>
+      <div class="flex gap-2 justify-end">
+        <button class="btn btn-secondary" onclick="this.closest('.fixed').remove()">取消</button>
+        <button class="btn btn-primary" onclick="savePromptModal('${key}')">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function savePromptModal(key) {
+  const val = document.getElementById('modal-prompt').value;
+  await saveConfig(key, val);
+  configData[key].value = val;
+  document.querySelector('.fixed.inset-0')?.remove();
+}
+
+// ============================================================
+// Providers
+// ============================================================
+async function loadProviders() {
+  try {
+    const data = await apiJson('/admin/providers');
+    const list = data.providers || [];
+    if (list.length === 0) {
+      document.getElementById('providers-list').innerHTML = '<p class="text-gray-500">还没有添加供应商。</p>';
+      return;
+    }
+    document.getElementById('providers-list').innerHTML = list.map(p => `
+      <div class="bg-panel-card border border-panel-border rounded-lg p-4 mb-3 flex items-center justify-between">
+        <div>
+          <p class="font-semibold">${escHtml(p.name)}</p>
+          <p class="text-xs text-gray-500 mt-1">${escHtml(p.api_base_url || '')}</p>
+          <p class="text-xs text-gray-500">Key: ${p.api_key_preview || '（未设置）'}</p>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-sm btn-secondary" onclick='editProvider(${JSON.stringify(p).replace(/'/g,"&#39;")})'>编辑</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteProvider(${p.id})">删除</button>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('providers-list').innerHTML = `<p class="text-red-400">加载失败：${e.message}</p>`;
+  }
+}
+
+function showAddProvider() {
+  document.getElementById('provider-form').classList.remove('hidden');
+  document.getElementById('provider-form-title').textContent = '添加供应商';
+  document.getElementById('pf-id').value = '';
+  document.getElementById('pf-name').value = '';
+  document.getElementById('pf-key').value = '';
+  document.getElementById('pf-url').value = '';
+}
+
+function editProvider(p) {
+  document.getElementById('provider-form').classList.remove('hidden');
+  document.getElementById('provider-form-title').textContent = '编辑供应商';
+  document.getElementById('pf-id').value = p.id;
+  document.getElementById('pf-name').value = p.name || '';
+  document.getElementById('pf-key').value = '';
+  document.getElementById('pf-url').value = p.api_base_url || '';
+}
+
+function hideProviderForm() {
+  document.getElementById('provider-form').classList.add('hidden');
+}
+
+async function saveProvider() {
+  const id = document.getElementById('pf-id').value;
+  const body = {
+    name: document.getElementById('pf-name').value,
+    api_base_url: document.getElementById('pf-url').value,
+    api_key: document.getElementById('pf-key').value,
+  };
+  try {
+    if (id) {
+      await api(`/admin/providers/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+      toast('✅ 供应商已更新');
+    } else {
+      await api('/admin/providers', { method: 'POST', body: JSON.stringify(body) });
+      toast('✅ 供应商已添加');
+    }
+    hideProviderForm();
+    loadProviders();
+  } catch(e) {
+    toast('❌ 保存失败', false);
+  }
+}
+
+async function deleteProvider(id) {
+  if (!confirm('确定要删除这个供应商吗？')) return;
+  await api(`/admin/providers/${id}`, { method: 'DELETE' });
+  toast('已删除');
+  loadProviders();
+}
+
+// ============================================================
+// Memories
+// ============================================================
+let memPage = 0;
+const MEM_LIMIT = 20;
+
+async function loadMemories() {
+  const sort = document.getElementById('mem-sort').value;
+  const imp = document.getElementById('mem-importance').value;
+  let url = `/debug/memories?limit=${MEM_LIMIT}&offset=${memPage * MEM_LIMIT}&sort=${sort}`;
+  if (imp) url += `&min_importance=${imp}`;
+
+  try {
+    const data = await apiJson(url);
+    renderMemories(data.memories || [], data.total_memories || 0);
+  } catch(e) {
+    document.getElementById('memories-list').innerHTML = `<p class="text-red-400">加载失败：${e.message}</p>`;
+  }
+}
+
+async function searchMemories() {
+  const q = document.getElementById('mem-search').value.trim();
+  if (!q) { loadMemories(); return; }
+  try {
+    const data = await apiJson(`/debug/memories?q=${encodeURIComponent(q)}&limit=50`);
+    renderMemories(data.memories || [], data.total_memories || 0);
+  } catch(e) {
+    document.getElementById('memories-list').innerHTML = `<p class="text-red-400">搜索失败：${e.message}</p>`;
+  }
+}
+
+function renderMemories(memories, total) {
+  if (memories.length === 0) {
+    document.getElementById('memories-list').innerHTML = '<p class="text-gray-500">没有找到记忆。</p>';
+    document.getElementById('mem-pagination').innerHTML = '';
+    return;
+  }
+
+  document.getElementById('memories-list').innerHTML = memories.map(m => `
+    <div class="memory-card">
+      <div class="flex justify-between items-start">
+        <div class="flex-1">
+          ${m.title ? `<p class="font-semibold text-gray-200 mb-1">${escHtml(m.title)}</p>` : ''}
+          <p class="text-gray-400 text-sm">${escHtml(m.content?.slice(0, 200) || '')}</p>
+          <div class="flex gap-2 mt-2 flex-wrap">
+            <span class="badge ${m.importance >= 8 ? 'imp-high' : m.importance >= 5 ? 'imp-mid' : 'imp-low'}">重要度 ${m.importance}</span>
+            ${m.is_permanent ? '<span class="badge imp-high">🔒 锁定</span>' : ''}
+            ${m.heat !== undefined ? `<span class="badge" style="background:rgba(251,146,60,0.15);color:#fb923c">🔥 ${(m.heat||0).toFixed(2)}</span>` : ''}
+            ${m.category_name ? `<span class="badge" style="background:rgba(148,163,184,0.1);color:#94a3b8">${escHtml(m.category_name)}</span>` : ''}
+          </div>
+        </div>
+        <button class="btn btn-sm btn-danger ml-4" onclick="deleteMemory(${m.id})">删除</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Pagination
+  const totalPages = Math.ceil(total / MEM_LIMIT);
+  if (totalPages > 1) {
+    let pg = '';
+    if (memPage > 0) pg += `<button class="btn btn-sm btn-secondary" onclick="memPage--;loadMemories()">← 上一页</button>`;
+    pg += `<span class="text-sm text-gray-500 leading-8">${memPage+1} / ${totalPages}</span>`;
+    if (memPage < totalPages - 1) pg += `<button class="btn btn-sm btn-secondary" onclick="memPage++;loadMemories()">下一页 →</button>`;
+    document.getElementById('mem-pagination').innerHTML = pg;
+  } else {
+    document.getElementById('mem-pagination').innerHTML = '';
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm('确定删除这条记忆？')) return;
+  await api(`/debug/memories/${id}`, { method: 'DELETE' });
+  toast('已删除');
+  loadMemories();
+}
+
+// ============================================================
+// System Prompt
+// ============================================================
+async function loadPrompt() {
+  try {
+    const data = await apiJson('/admin/system-prompt');
+    document.getElementById('prompt-editor').value = data.prompt || data.content || '';
+    document.getElementById('prompt-status').textContent = data.source ? `来源：${data.source}` : '';
+  } catch(e) {
+    document.getElementById('prompt-editor').value = '加载失败：' + e.message;
+  }
+}
+
+async function savePrompt() {
+  const val = document.getElementById('prompt-editor').value;
+  try {
+    await api('/admin/system-prompt', {
+      method: 'PUT',
+      body: JSON.stringify({ content: val })
+    });
+    toast('✅ 人设已保存');
+    document.getElementById('prompt-status').textContent = '已保存';
+  } catch(e) {
+    toast('❌ 保存失败', false);
+  }
+}
+
+// ============================================================
+// Tools
+// ============================================================
+async function loadDreamStatus() {
+  try {
+    const data = await apiJson('/dream/status');
+    const lines = [];
+    if (data.is_dreaming) lines.push('🌙 正在做梦中…');
+    else lines.push('😴 当前醒着');
+    if (data.last_dream_date) lines.push(`上次 Dream：${data.last_dream_date}`);
+    if (data.unprocessed_fragments !== undefined) lines.push(`待处理碎片：${data.unprocessed_fragments} 条`);
+    document.getElementById('dream-status').innerHTML = lines.join('<br>');
+  } catch(e) {
+    document.getElementById('dream-status').textContent = '无法获取状态';
+  }
+}
+
+async function triggerDream() {
+  toast('🌙 Dream 已触发…');
+  try {
+    await api('/dream/start', { method: 'POST', body: JSON.stringify({}) });
+    toast('✅ Dream 开始执行');
+    setTimeout(loadDreamStatus, 2000);
+  } catch(e) { toast('❌ 触发失败', false); }
+}
+
+async function triggerDigest() {
+  const date = document.getElementById('digest-date').value;
+  const url = date ? `/admin/daily-digest?date=${date}` : '/admin/daily-digest';
+  toast('📅 每日整理已触发…');
+  try {
+    await apiJson(url);
+    toast('✅ 每日整理完成');
+  } catch(e) { toast('❌ 整理失败', false); }
+}
+
+async function triggerExtract() {
+  toast('🧩 正在提取…');
+  try {
+    const data = await apiJson('/admin/extract-now', { method: 'POST' });
+    if (data.error) {
+      toast(`❌ 提取失败：${data.error}`, false);
+    } else {
+      toast(`✅ 提取完成：+${data.extracted || data.saved || 0} 条，跳过 ${data.skipped || 0} 条`);
+    }
+  } catch(e) { toast('❌ 提取失败：' + e.message, false); }
+}
+
+async function triggerSeed() {
+  try {
+    const data = await apiJson('/import/seed-memories');
+    toast(`✅ 导入完成：${data.imported || 0} 条`);
+  } catch(e) { toast('❌ 导入失败', false); }
+}
+
+async function downloadBackup() {
+  window.open(`${API}/sync/export${TOKEN ? '?token='+TOKEN : ''}`, '_blank');
+}
+
+async function triggerMigrate() {
+  toast('🔄 开始迁移…');
+  try {
+    const data = await apiJson('/admin/migrate-embeddings');
+    toast(`✅ 迁移完成：${data.migrated || 0} 条`);
+  } catch(e) { toast('❌ 迁移失败', false); }
+}
+
+// ============================================================
+// Utils
+// ============================================================
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s) { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// ============================================================
+// Init
+// ============================================================
+switchTab('dashboard');
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "sleep_analysis",
+        "data": [
+          {
+            "sleepStart": "2026-05-05 01:52:00 -0400",
+            "sleepEnd":   "2026-05-06 07:21:00 -0400",
+            "totalSleep": 13.3,
+            "deep":       2.29,
+            "rem":        3.45,
+            "core":       7.36,
+            "awake":      0.2
+          }
+        ]
+      }
+    ],
+    "workouts": [],
+    "stateOfMind": []
+  }
+}

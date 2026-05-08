@@ -1,0 +1,14 @@
+[Unit]
+Description=Claude Code Runner for Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=userfb800e0c
+WorkingDirectory=/home/chris/assistant/claude-runner
+ExecStart=/usr/bin/python3 /home/chris/assistant/claude-runner/runner.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,85 @@
+# Personal AI Assistant on Raspberry Pi 5
+# Usage: cp .env.example .env && docker compose up -d
+
+services:
+  # ── PostgreSQL + pgvector ─────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kiwi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-kiwi_mem}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kiwi} -d ${POSTGRES_DB:-kiwi_mem}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── kiwi-mem 记忆网关 ──────────────────────────────────────
+  kiwi-mem:
+    build: ./kiwi-mem
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8080}:${PORT:-8080}"
+    environment:
+      API_KEY: ${API_KEY}
+      API_BASE_URL: ${API_BASE_URL}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-claude-sonnet-4-6}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kiwi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kiwi_mem}
+      MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
+      PORT: ${PORT:-8080}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+      MAX_MEMORIES_INJECT: ${MAX_MEMORIES_INJECT:-15}
+      MEMORY_EXTRACT_INTERVAL: ${MEMORY_EXTRACT_INTERVAL:-3}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      JIEBA_CUSTOM_WORDS: ${JIEBA_CUSTOM_WORDS:-}
+      EXTRA_REFERER: ${EXTRA_REFERER:-https://kiwi-mem.local}
+      EXTRA_TITLE: ${EXTRA_TITLE:-kiwi-mem}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      MEMORY_MODEL: ${MEMORY_MODEL:-gpt-5.4-mini}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── Cloudflare Tunnel ──────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - kiwi-mem
+
+  # ── Telegram Bot ───────────────────────────────────────────
+  telegram-bot:
+    build: ./telegram-bot
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      KIWI_MEM_URL: http://kiwi-mem:${PORT:-8080}
+      KIWI_MEM_ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+      API_KEY: ${API_KEY}
+      API_BASE_URL: ${API_BASE_URL}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-claude-sonnet-4-6}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      CHEAP_MODEL: ${CHEAP_MODEL:-gpt-5.4-mini}
+      TRIGGER_MODEL: ${TRIGGER_MODEL:-gpt-5.5}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kiwi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kiwi_mem}
+    depends_on:
+      db:
+        condition: service_healthy
+      kiwi-mem:
+        condition: service_started
+
+volumes:
+  pg-data:

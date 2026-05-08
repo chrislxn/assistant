@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.env
+
+# 你自己的人设和记忆（不要提交到公开仓库！）
+# system_prompt.txt 已包含通用示例，你可以直接修改
+# seed_memories.py 包含你的个人记忆数据，务必不要提交
+seed_memories.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
