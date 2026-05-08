@@ -49,6 +49,8 @@ from database import (
     insert_memory_item, get_memory_item,
     # Phase 1.0 M2
     resolve_candidate,
+    # Phase 1.0 M3
+    list_candidates, get_candidate as db_get_candidate, reject_candidate,
     get_active_core_block, create_core_block_version, log_memory_access,
     migrate_persona_to_core_block,
 )
@@ -357,7 +359,7 @@ app = FastAPI(title="AI Memory Gateway", version="3.1.0", lifespan=lifespan)
 class AdminAuthMiddleware(BaseHTTPMiddleware):
     """当设置了 ACCESS_TOKEN 时，受保护端点需要认证"""
 
-    PROTECTED_PREFIXES = ("/admin/", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks", "/hermes", "/events", "/candidates")
+    PROTECTED_PREFIXES = ("/admin/", "/admin/candidates", "/debug/", "/sync/", "/memory/mcp", "/calendar/mcp", "/core-blocks", "/hermes", "/events", "/candidates")
     
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -2654,6 +2656,121 @@ async def post_access_log(request: Request):
         return {"status": "logged"}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ============================================================
+# Phase 1.0 M3 — Review Queue API
+# ============================================================
+
+@app.get("/admin/candidates")
+async def admin_list_candidates(
+    status: str = "pending",
+    limit: int = 20,
+    source_trust: str = "",
+    memory_type: str = "",
+):
+    """
+    列出 candidates（受 AdminAuthMiddleware 保护）。
+
+    Query params:
+      - status: pending (default) | pending_auto | requires_review | committed | rejected
+      - limit: 1-100 (default 20)
+      - source_trust: optional filter
+      - memory_type: optional filter
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        results = await list_candidates(
+            status=status,
+            limit=limit,
+            source_trust=source_trust or None,
+            memory_type=memory_type or None,
+        )
+        return {
+            "status": status,
+            "count": len(results),
+            "candidates": results,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/admin/candidates/{candidate_id}")
+async def admin_get_candidate(candidate_id: str):
+    """
+    查看单条 candidate 全字段（受 AdminAuthMiddleware 保护）。
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        cand = await db_get_candidate(candidate_id)
+        if not cand:
+            return JSONResponse(status_code=404, content={"error": "candidate not found"})
+        return {"candidate": _serialize_candidate(cand)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/admin/candidates/{candidate_id}/commit")
+async def admin_commit_candidate(candidate_id: str):
+    """
+    人工批准 candidate（受 AdminAuthMiddleware 保护）。
+
+    调用 resolve_candidate(force_commit=True) 执行全量 commit 逻辑：
+    conflict lookup → supersede → memory_items + legacy memories dual-write
+    → candidate status='committed'。
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        result = await resolve_candidate(candidate_id, force_commit=True)
+        if result["action"] == "error":
+            return JSONResponse(status_code=404, content=result)
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/admin/candidates/{candidate_id}/reject")
+async def admin_reject_candidate(candidate_id: str, request: Request):
+    """
+    人工拒绝 candidate（受 AdminAuthMiddleware 保护）。
+
+    Optional body: {"reason": "..."}
+    """
+    if not await get_memory_enabled():
+        return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
+
+    try:
+        reason = None
+        try:
+            body = await request.json()
+            reason = body.get("reason") if body else None
+        except Exception:
+            pass
+        result = await reject_candidate(candidate_id, reason=reason)
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _serialize_candidate(cand: dict) -> dict:
+    """将 asyncpg Record 转为 JSON-safe dict。"""
+    out = {}
+    for k, v in cand.items():
+        if isinstance(v, (datetime,)):
+            out[k] = str(v)
+        elif isinstance(v, (list,)):
+            out[k] = [str(x) for x in v]
+        elif isinstance(v, (uuid.UUID,)):
+            out[k] = str(v)
+        else:
+            out[k] = v
+    return out
 
 
 @app.post("/debug/memories/{memory_id}/toggle-permanent")

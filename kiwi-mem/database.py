@@ -4139,9 +4139,12 @@ _DIAGNOSIS_KEYWORDS = frozenset({
 })
 
 
-async def resolve_candidate(candidate_id: str) -> dict:
+async def resolve_candidate(candidate_id: str, *, force_commit: bool = False) -> dict:
     """
     评估并处理一条 candidate 的提交/拒绝/审核。
+
+    force_commit=True (M3 review queue): 人工批准。跳过 assistant_inferred keep_pending，
+    跳过 low-risk whitelist 检查，但仍保留 transaction + conflict/supersede 安全。
 
     Phase 1 rules:
       - All guard checks (requires_review, keep_pending) are side-effect-free
@@ -4167,6 +4170,17 @@ async def resolve_candidate(candidate_id: str) -> dict:
             return {"action": "error", "reason": "candidate not found",
                     "memory_id": None, "legacy_id": None, "superseded_id": None}
 
+        # ---- Status guard: reject already-committed or rejected ----
+        current_status = cand["status"] or "pending"
+        if current_status == "committed":
+            return {"action": "error",
+                    "reason": "candidate already committed",
+                    "memory_id": None, "legacy_id": None, "superseded_id": None}
+        if current_status == "rejected":
+            return {"action": "error",
+                    "reason": "candidate already rejected, use reopen if needed (not in Phase 1.0)",
+                    "memory_id": None, "legacy_id": None, "superseded_id": None}
+
         source_trust = cand["source_trust"] or "unknown"
         memory_type = cand["memory_type"] or "unknown"
         extractor_name = (cand["extractor_name"] or "").lower()
@@ -4190,55 +4204,60 @@ async def resolve_candidate(candidate_id: str) -> dict:
             or extractor_name in ("claude_mcp", "hermes_agent")
         )
 
-        # ---- R4: health_pattern / health_baseline → requires_review (always) ----
-        if memory_type in ("health_pattern", "health_baseline"):
-            await conn.execute(
-                "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
-                candidate_id,
-            )
-            return {"action": "requires_review",
-                    "reason": f"memory_type={memory_type} requires human review",
-                    "memory_id": None, "legacy_id": None, "superseded_id": None}
-
-        # ---- R5: high-stakes types require review (unless user_direct) ----
-        if memory_type in _HIGH_STAKES_TYPES:
-            if source_trust == "user_direct":
-                pass  # fall through
-            else:
+        # ---- Guard checks: only for auto-resolve (not force_commit) ----
+        if not force_commit:
+            # ---- R4: health_pattern / health_baseline → requires_review (always) ----
+            if memory_type in ("health_pattern", "health_baseline"):
                 await conn.execute(
                     "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
                     candidate_id,
                 )
                 return {"action": "requires_review",
-                        "reason": f"memory_type={memory_type} requires human review (source_trust={source_trust})",
+                        "reason": f"memory_type={memory_type} requires human review",
                         "memory_id": None, "legacy_id": None, "superseded_id": None}
 
-        # ---- R6: diagnosis-like → requires_review (unless user_direct) ----
-        if has_diagnosis and source_trust != "user_direct":
-            await conn.execute(
-                "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
-                candidate_id,
-            )
-            return {"action": "requires_review",
-                    "reason": "diagnosis-like content requires human review",
-                    "memory_id": None, "legacy_id": None, "superseded_id": None}
+            # ---- R5: high-stakes types require review (unless user_direct) ----
+            if memory_type in _HIGH_STAKES_TYPES:
+                if source_trust == "user_direct":
+                    pass  # fall through
+                else:
+                    await conn.execute(
+                        "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
+                        candidate_id,
+                    )
+                    return {"action": "requires_review",
+                            "reason": f"memory_type={memory_type} requires human review (source_trust={source_trust})",
+                            "memory_id": None, "legacy_id": None, "superseded_id": None}
 
-        # ---- R1: assistant_inferred / claude_mcp / hermes_agent → keep_pending ----
-        # 当前 data model：claude_mcp/hermes_agent 使用 source_trust='assistant_inferred'，
-        # 实际 agent 标识在 extractor_name 字段。同时检查两者。
-        if is_assistant_or_agent:
-            return {"action": "keep_pending",
-                    "reason": f"source_trust={source_trust}, extractor_name={extractor_name} never auto-commits",
-                    "memory_id": None, "legacy_id": None, "superseded_id": None}
+            # ---- R6: diagnosis-like → requires_review (unless user_direct) ----
+            if has_diagnosis and source_trust != "user_direct":
+                await conn.execute(
+                    "UPDATE memory_candidates SET status = 'requires_review' WHERE candidate_id = $1",
+                    candidate_id,
+                )
+                return {"action": "requires_review",
+                        "reason": "diagnosis-like content requires human review",
+                        "memory_id": None, "legacy_id": None, "superseded_id": None}
+
+            # ---- R1: assistant_inferred / claude_mcp / hermes_agent → keep_pending ----
+            # 当前 data model：claude_mcp/hermes_agent 使用 source_trust='assistant_inferred'，
+            # 实际 agent 标识在 extractor_name 字段。同时检查两者。
+            if is_assistant_or_agent:
+                return {"action": "keep_pending",
+                        "reason": f"source_trust={source_trust}, extractor_name={extractor_name} never auto-commits",
+                        "memory_id": None, "legacy_id": None, "superseded_id": None}
 
         # ---- Determine auto-commit eligibility (side-effect-free) ----
-        can_auto_commit = False
-        if source_trust == "user_direct":
-            # WARN-1: 使用 low-risk whitelist，未知类型默认不 auto_commit
-            if memory_type in _LOW_RISK_TYPES and not has_diagnosis:
-                can_auto_commit = True  # R2
-        elif source_trust == "system_generated" and memory_type == "health_observation_summary":
-            can_auto_commit = True  # R3
+        if force_commit:
+            can_auto_commit = True
+        else:
+            can_auto_commit = False
+            if source_trust == "user_direct":
+                # WARN-1: 使用 low-risk whitelist，未知类型默认不 auto_commit
+                if memory_type in _LOW_RISK_TYPES and not has_diagnosis:
+                    can_auto_commit = True  # R2
+            elif source_trust == "system_generated" and memory_type == "health_observation_summary":
+                can_auto_commit = True  # R3
 
         if not can_auto_commit:
             return {"action": "keep_pending",
@@ -4337,6 +4356,112 @@ async def resolve_candidate(candidate_id: str) -> dict:
                 "memory_id": str(new_id),
                 "legacy_id": legacy_id,
                 "superseded_id": superseded_id}
+
+
+# ============================================================
+# Phase 1.0 M3 — review queue helpers
+# ============================================================
+
+async def list_candidates(
+    *,
+    status: str = "pending",
+    limit: int = 20,
+    source_trust: Optional[str] = None,
+    memory_type: Optional[str] = None,
+) -> list[dict]:
+    """
+    列出 candidates，支持按 status / source_trust / memory_type 筛选。
+    返回列表含 age_days 计算字段。
+    """
+    pool = await get_pool()
+    limit = max(1, min(limit, 100))
+    where = ["status = $1"]
+    params: list = [status]
+
+    if source_trust:
+        where.append(f"source_trust = ${len(params) + 1}")
+        params.append(source_trust)
+    if memory_type:
+        where.append(f"memory_type = ${len(params) + 1}")
+        params.append(memory_type)
+
+    query = f"""
+        SELECT candidate_id, status, memory_type, subject_key, predicate_key,
+               rendered_text, source_trust, privacy_level, confidence,
+               importance, created_at,
+               EXTRACT(DAY FROM NOW() - created_at)::int AS age_days,
+               extractor_name, source_event_ids, actor_scope
+        FROM memory_candidates
+        WHERE {' AND '.join(where)}
+        ORDER BY created_at DESC
+        LIMIT ${len(params) + 1}
+    """
+    params.append(limit)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+    return [dict(r) for r in rows]
+
+
+async def get_candidate(candidate_id: str) -> Optional[dict]:
+    """按 candidate_id 查询单条 candidate 全字段，不存在返回 None。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM memory_candidates WHERE candidate_id = $1",
+            candidate_id,
+        )
+    return dict(row) if row else None
+
+
+async def reject_candidate(candidate_id: str, reason: Optional[str] = None) -> dict:
+    """
+    人工拒绝 candidate。不写 memory_items，不写 memories。
+
+    Status guards:
+      - committed → rejected: denied (would orphan committed memory)
+      - rejected → rejected: idempotent, returns already_rejected
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        cand = await conn.fetchrow(
+            "SELECT candidate_id, status FROM memory_candidates WHERE candidate_id = $1",
+            candidate_id,
+        )
+        if not cand:
+            return {"action": "error", "reason": "candidate not found",
+                    "candidate_id": candidate_id, "status": "unknown"}
+
+        current_status = cand["status"] or "pending"
+
+        # Idempotent: already rejected
+        if current_status == "rejected":
+            return {"action": "rejected",
+                    "candidate_id": candidate_id,
+                    "status": "rejected",
+                    "reason": "already rejected"}
+
+        # Deny: committed candidate should not be rejected
+        if current_status == "committed":
+            return {"action": "error",
+                    "reason": "candidate already committed, cannot reject",
+                    "candidate_id": candidate_id,
+                    "status": current_status}
+
+        await conn.execute(
+            """
+            UPDATE memory_candidates
+            SET status = 'rejected',
+                reviewed_at = NOW(),
+                reviewed_by = $2
+            WHERE candidate_id = $1
+            """,
+            candidate_id,
+            reason or "manual_reject",
+        )
+        return {"action": "rejected",
+                "candidate_id": candidate_id,
+                "status": "rejected"}
 
 
 async def create_core_block_version(
