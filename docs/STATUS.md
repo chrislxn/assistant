@@ -1,7 +1,7 @@
 # STATUS — 最后更新：2026-05-08
 
 ## 当前阶段
-Phase 0.5（M1–M5 完成，进入 M6）
+Phase 0.5 完成 → 进入 Phase 1 规划
 
 ## 已完成
 - ✅ M1：4 张新表 + memories 8 列扩展 + source_trust 回填（117 条）
@@ -14,10 +14,15 @@ Phase 0.5（M1–M5 完成，进入 M6）
 - ✅ M4.3：get_persona() 改为优先读 core_blocks.response_policy，fallback memories
 - ✅ M5.1：context injection 加入 core_blocks（白名单：response_policy + active_projects）
 - ✅ M5.2：memory_access_log 写入（api_client + telegram_bot 双入口）
+- ✅ M6.1：mcp_server.py save_memory 写入 source_trust=assistant_inferred / source_type=mcp_agent / actor=claude_mcp
+- ✅ Phase 0.5 回归验证：10/10 全通过
 
-## 下一步（按顺序）
-1. **M6** — mcp_server.py：source_trust='assistant_inferred' + create_candidate
-2. 回归验证 + 验收标准检测
+## 下一步（Phase 1）
+- memory_items 表 + memory_id UUID → 现有 memories 迁移
+- resolver / conflict detector
+- Privacy-gated retrieval
+- Intent 分类
+- MCP 工具重命名为 propose_memory
 
 ## 关键决策记录
 - memory_candidates 纳入 Phase 0.5，assistant_inferred → pending 不自动提交
