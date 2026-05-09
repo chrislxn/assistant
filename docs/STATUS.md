@@ -1,8 +1,8 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.1-M3 Privacy Gate completed** — automated retrieval privacy gate test script delivered (109/109 PASS)。
-Phase 1.0 Memory Lifecycle closure completed / sealed；Hermes conservative integration completed。
+**Phase 1.2 Retrieval Cleanup & Boundary Alignment completed** — test coverage 124/124, all internal paths explicit actor。
+Phase 1.0/1.1 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
 - **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，但尚未接入 retrieval
@@ -162,6 +162,29 @@ Memory Path 具体交付：
 - 测试结果：**109/109 PASS**（search 25 + recent 25 + title 25 + sealed 14 + exclude 15 + cleanup 5）
 - 测试数据残留确认：0
 
+### Phase 1.2-M1 — Test Helper Cleanup
+
+- 移除 `_load_token_from_dotenv` 中硬编码路径 `/home/chris/assistant/.env`
+- 移除 cleanup verification 中无实际作用的 dead code 空循环
+- `recent_memories()` test helper 增加 `exclude_privacy` 参数，消除 exclude 交集测试中的裸 `_get` 调用
+- 测试结果不变：109/109 PASS
+
+### Phase 1.2-M2 — local_bot Full Positive Matrix Coverage
+
+- `local_bot` 加入 test ACTORS dict（visible: public_like/personal/sensitive/restricted, hidden: sealed）
+- 覆盖 search/recent/title 三路径
+- 测试结果：109/109 → **124/124 PASS**
+
+### Phase 1.2-M3 — Internal Retrieval Actor Boundary Audit
+
+- 5 处 internal memory read path 显式传 `actor="local_bot"`：
+  - `database.py` `check_memory_duplicate()` dedup search
+  - `main.py` AI 提取对比 search + get_recent（×2 路径）
+- 不改 SQL 语义、不改 retrieval policy
+- **Deferred**: `get_recent_memories` 四分支（category_id × exclude_privacy）暂不重构 — 124/124 regression 已覆盖，避免引入新的参数索引风险
+- Legacy `memories` 表仍是 primary retrieval source；`memory_items` 是 committed memory lifecycle target，尚未接入 retrieval
+- 所有 internal read path 现在显式标注 actor boundary
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -173,16 +196,22 @@ Phase 1.0 M8 验证：**25/25 Hermes → Phase 1.0 lifecycle 端到端通过**
 Phase 1.1-M1 验证：**19/19 helper policy tests + regression 全通过**
 Phase 1.1-M2 验证：**25/25 retrieval gate + 6/6 title+exclude + 3/3 regression 全通过**
 Phase 1.1-M3 验证：**109/109 automated retrieval gate test + 3/3 regression 全通过**
+Phase 1.2-M1 验证：**109/109 regression unchanged after cleanup**
+Phase 1.2-M2 验证：**124/124 local_bot +15 coverage**
+Phase 1.2-M3 验证：**124/124 + 19/19, no SQL logic change**
+- Test data residue: memories 0 / memory_candidates 0 / memory_items 0
+- memory_events: benign append-only `privacy_gate_test` provenance records (non-removable, acceptable)
 
 ## 下一阶段
-**Phase 1.1 Privacy Gate — completed (M1/M2/M3).**
-Phase 1.1 follow-up / Phase 1.2 推荐方向：
+**Phase 1.2 Retrieval Cleanup & Boundary Alignment — completed (M1/M2/M3).**
+
+Recommended next: **Phase 1.3 — Minimal Evaluation Harness**
 - minimal eval set（10-15 条，positive retrieval + negative leakage）
 - eval runner + seed data
 
-Phase 1.2（后续）：
+Other Phase 1.3 candidates:
+- Memory Items Retrieval Bridge Planning（memory_items → primary retrieval design）
 - memory_type cleanup（减少 legacy 比例）
-- basic policy rules 抽离
 
 ---
 
@@ -220,8 +249,13 @@ Phase 1.2（后续）：
 - Phase 1.1-M3：`ACCESS_TOKEN` 不硬编码在测试脚本中，通过 env var 传入
 - Phase 1.1-M3：测试 memory 创建使用 POST 返回的 `memory_id` 字段直接获取 ID（避免 sealed 等高级别记忆因隐私门控在 title lookup 中不可见）
 - Phase 1.1-M3：测试脚本 447 行，stdlib only（`urllib.request` + `json`），零外部依赖，可在任何 Python 3.x 环境运行
+- Phase 1.2-M1：测试脚本不再包含硬编码文件路径；cleanup verification 移除空循环 dead code
+- Phase 1.2-M2：`local_bot` 纳入 full actor privacy matrix regression（三路径 15 checks，109→124）
 - Phase 1.2-M3：所有 internal memory read path 显式传 `actor="local_bot"`（5 处：database.py check_memory_duplicate + main.py AI 提取 ×2 路径 search/recent）
 - Phase 1.2-M3：`get_recent_memories` 四分支（category_id × exclude_privacy）暂不重构 — 124/124 regression 已覆盖，避免引入新的参数索引风险（deferred）
+- Phase 1.2：legacy `memories` 表仍是 primary retrieval source；`memory_items` 是 committed memory lifecycle target，尚未接入 primary retrieval
+
+> tag: phase-1.2-retrieval-cleanup
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
