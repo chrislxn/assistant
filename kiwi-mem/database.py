@@ -4610,3 +4610,45 @@ async def log_memory_access(
             )
     except Exception as e:
         print(f"⚠️  memory_access_log 写入失败（非致命）: {e}")
+
+
+# ============================================================
+# Phase 1.1 M1 — Privacy Policy Helper
+# ============================================================
+
+# actor → allowed privacy_levels (in decreasing privilege order).
+# sealed is never returned — it requires explicit out-of-band unseal.
+_PRIVACY_POLICY: dict[str, list[str]] = {
+    "local_bot":      ["public_like", "personal", "sensitive", "restricted"],
+    "api_client":     ["public_like", "personal", "sensitive", "restricted"],
+    # api_client currently maps to trusted local/private endpoint policy.
+    # If future lower-trust clients use /v1/chat/completions, require
+    # explicit X-Actor header or apply lower privilege.
+    "telegram_bot":   ["public_like", "personal", "sensitive", "restricted"],
+    "claude_mcp":     ["public_like", "personal", "sensitive"],
+    "hermes_agent":   ["public_like", "personal"],
+    "dev_agent":      ["public_like", "personal"],
+}
+
+_DEFAULT_PRIVACY = ["public_like", "personal"]
+
+
+def get_allowed_privacy_levels(actor: str) -> list[str]:
+    """
+    返回 actor 被允许读取的 privacy_level 列表。
+
+    规则摘要：
+      local_bot     → public_like, personal, sensitive, restricted
+      api_client    → public_like, personal, sensitive, restricted
+      telegram_bot  → public_like, personal, sensitive, restricted
+      claude_mcp    → public_like, personal, sensitive
+      hermes_agent  → public_like, personal
+      dev_agent     → public_like, personal
+      unknown/任何  → public_like, personal
+
+    sealed 永远不会被此 helper 返回。
+    Phase 1.1-M1 不做 actor_scope 过滤。
+    """
+    if not actor or not isinstance(actor, str):
+        return list(_DEFAULT_PRIVACY)
+    return list(_PRIVACY_POLICY.get(actor, _DEFAULT_PRIVACY))
