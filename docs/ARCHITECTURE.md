@@ -35,11 +35,15 @@ Key architectural commitments:
 |-----------|--------------------------|
 | Raw event ≠ memory | `memory_events` table (append-only) separate from `memories`/`memory_items` |
 | Candidate ≠ truth | `memory_candidates` with `pending`/`pending_auto`/`requires_review` states |
-| Forgetting is a feature | Heat decay, Dream consolidation, `valid_until` expiry |
+| Committed memory ≠ immutable truth | Supersede/archive via resolver; `valid_until` expiry; versioned core_blocks |
+| Emotional state is not stable identity | High-importance + `requires_review` for identity/relationship types; no auto-commit for `assistant_inferred` |
+| AI may propose, not define the user | Candidates are proposals; user is sole authority on identity; Hermes cannot write committed memories |
 | Retrieval safety > recall | SQL-layer actor privacy gate (Phase 1.1), sealed exclusion, exclude_privacy |
+| Forgetting is a feature | Heat decay, Dream consolidation, `valid_until` expiry |
 | Provenance is mandatory | `source_event_ids` chain from event → candidate → committed memory |
-| Agent boundary | Actor privacy matrix; Hermes restricted; no auto-commit for `assistant_inferred` |
-| Temporal model | 7-layer memory hierarchy; emotional states not permanently identity |
+| Long-term memory must remain inspectable | Review queue API; admin panel; core block version history; access audit log |
+
+> **Internal gate vs external provider boundary**: The actor privacy gate operates at the kiwi-mem retrieval layer only. Content sent to external LLM or embedding providers (co.yes.vg, SiliconFlow) is not governed by these gates. A `restricted` memory that Hermes cannot retrieve may still have been transmitted to a third-party embedding provider at write time. This is a known gap — see KNOWN_RISKS.md Risk 9. A future Provider Boundary Policy (privacy_level → provider routing) is planned but not implemented.
 
 **服务拓扑：**
 

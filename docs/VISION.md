@@ -81,7 +81,7 @@ Memories exist at different levels of permanence, review, and compression. The h
 
 **Critical rule**: Short-term emotional states must never be permanently solidified as identity (layer 2 → layer 6 without review is a design violation). Emotional compression happens across time windows, not from single events.
 
-**Current implementation status**: Layer 1 (memory_events) ✓, Layer 4-5 (memories/memory_items) ✓, Layer 7 (core_blocks) ✓. Layers 2-3 (emotional cache/summarization) are deferred. Layer 6 (identity baseline) partially exists as high-importance memories but lacks dedicated schema.
+**Current implementation status**: Layer 1 (memory_events) ✓, Layer 4-5 (memories/memory_items) ✓, Layer 7 (core_blocks) ✓. Layers 2-3 (emotional cache/summarization) are deferred. Layer 6 (identity baseline) partially exists as high-importance memories (importance >= 8 + `memory_type` field soft classification) but lacks a dedicated table or type constraint — no schema-level enforcement that identity facts are treated differently from other high-importance memories.
 
 ---
 
@@ -185,7 +185,28 @@ These are aspirational, not prescriptive. Each must be evaluated against the pri
 
 ---
 
-## 8. Version Note
+## 8. Implementation Boundary
+
+This document describes design intent. Not everything described here is implemented. The gap between vision and current state is intentional — the system must earn each layer through verified safety before claiming it.
+
+**What exists today (Phase 1.4)**:
+- 7-layer memory conceptual model — but only layers 1, 4-5, and 7 have concrete schema and retrieval support.
+- Heat decay, Dream consolidation, `valid_until` expiry — basic forgetting mechanisms.
+- Actor privacy gate at the retrieval layer — but this does not extend to external provider calls (see KNOWN_RISKS.md Risk 9).
+- Candidate review queue — but no UI exists yet.
+- `memory_items` shadow retrieval helpers — but legacy `memories` remains the primary retrieval source.
+
+**What is future conceptual work**:
+- Layers 2-3 (transient emotional cache, summarized emotional trends) — not implemented.
+- Emotional compression pipeline — not implemented.
+- Reflection layer — not implemented; would require stronger validation than current model calls can guarantee.
+- Memory consolidation (Dream v2) with structured fragment fusion and provenance linking — not implemented.
+- Event graph, temporal reasoning, planner agent — not implemented.
+- Provider-level privacy routing, local embeddings, redaction-before-provider — not implemented at code level. User plans local model deployment; until code-level Provider Boundary Policy is in place, the system cannot guarantee that sensitive content stays local (see KNOWN_RISKS.md Risk 9).
+
+This boundary section exists to prevent the vision document from being read as a feature list. The system is built incrementally, with retrieval safety and provenance verified at each step before adding new capabilities.
+
+## 9. Version Note
 
 This document describes design intent, not current implementation. For what the system actually does today, see:
 

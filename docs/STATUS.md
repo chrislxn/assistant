@@ -287,6 +287,7 @@ Next: **Phase 1.4-M2b — shadow comparison script**
 - Ordinary feelings / complaints / short-term thoughts should default to **short-term observation**, not manual review.
 - Short-term observations may be retained for 7–14 days and later compressed into low-weight long-term digests.
 - Medium-risk factual information (grades, course status, project facts, technical environment) can be **auto-committed** with provenance and moderate importance.
+  - Note: "grades" may qualify as `sensitive` in some contexts. Privacy_level mapping for this category should be reviewed during Phase 1.5 design, not assumed.
 - Manual review should be **reserved for high-risk durable facts**: `identity_fact`, hard relationship facts, `health_baseline`, `risk_flag`, `policy_rule`, financial/legal sensitive facts, `core_blocks` updates, and long-term personality/relationship/health inferences.
 
 **Do not implement now.** Do not change resolver, schema, or candidate API. This is deferred until after Phase 1.4 retrieval bridge / bottom-layer safety work is sealed.
