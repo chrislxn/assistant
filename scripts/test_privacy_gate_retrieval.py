@@ -29,7 +29,7 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 
 def _load_token_from_dotenv() -> str:
     """Fallback: read ACCESS_TOKEN from ../.env (relative to project root)."""
-    for path in (".env", "../.env", "/home/chris/assistant/.env"):
+    for path in (".env", "../.env"):
         try:
             with open(path) as f:
                 for line in f:
@@ -211,14 +211,6 @@ def cleanup_test_memories():
                     deleted += 1
                 print(f"  DELETE id={rid} ({level}) [fallback]")
 
-    # Verify via ID list (avoids title-lookup privacy gate for sealed)
-    remaining = 0
-    for rid in _test_memory_ids:
-        resp = _get("/debug/memories", limit=1)
-        # Can't verify individual IDs via title (sealed invisible), so just
-        # check the total count dropped by expected amount.
-        pass
-
     # Count remaining test memories via title for non-sealed levels
     remaining = 0
     for level in LEVELS:
@@ -243,9 +235,15 @@ def search_memories(query: str, actor: str, limit: int = 10, exclude_privacy: st
     return _parse_results(resp)
 
 
-def recent_memories(actor: str, limit: int = 20) -> list[dict]:
-    """Call /debug/memories?actor=... (no q) — exercises get_recent_memories() code path."""
-    resp = _get("/debug/memories", actor=actor, limit=limit)
+def recent_memories(actor: str, limit: int = 20, exclude_privacy: str = "") -> list[dict]:
+    """Call /debug/memories?actor=... (no q) — exercises get_recent_memories() code path.
+
+    exclude_privacy: comma-separated string (HTTP API format; DB helper uses set[str]).
+    """
+    params: dict = {"actor": actor, "limit": limit}
+    if exclude_privacy:
+        params["exclude_privacy"] = exclude_privacy
+    resp = _get("/debug/memories", **params)
     return _parse_results(resp)
 
 
@@ -409,8 +407,7 @@ def run():
 
         # Recent path with exclude
         print("\n  Case A (recent): actor=api_client, exclude_privacy=restricted")
-        results = _get("/debug/memories", actor="api_client", limit=50, exclude_privacy="restricted")
-        results_list = _parse_results(results)
+        results_list = recent_memories(actor="api_client", limit=50, exclude_privacy="restricted")
         for level in ("public_like", "personal", "sensitive"):
             check_visible("api_client", level, results_list, "exclude:A-recent")
         for level in ("restricted", "sealed"):
