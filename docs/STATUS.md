@@ -1,7 +1,7 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.4 Memory Items Retrieval Bridge in progress (M1/M2a completed)** — shadow helpers ready, M2b shadow script pending。
+**Phase 1.4 Memory Items Retrieval Bridge in progress (M1/M2a/M1.5 completed)** — shadow helpers ready, philosophy docs added, M2b pending。
 Phase 1.0/1.1/1.2/1.3 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
@@ -227,6 +227,26 @@ Memory Path 具体交付：
 - Return dict aligned to legacy format: `memory_id`, `id` (alias), `content` (mapped from `rendered_text`), `privacy_level`, `memory_type`, `subject_key`, `predicate_key`, `confidence`, `importance`, `created_at`, `source_candidate_id`
 - **Zero production callers** — not wired to any endpoint or consumer
 
+### Phase 1.4-M1.5 — Documentation & Philosophy Layer
+
+- 新增 `docs/VISION.md` — 长期愿景与设计哲学
+  - Project vision: personal cognitive infrastructure, not chat archive
+  - 9 core principles (raw event ≠ memory, retrieval safety > recall, forgetting is a feature, etc.)
+  - 7-layer memory temporal model (raw event → transient emotional cache → ... → core blocks)
+  - Forgetting / compression philosophy
+  - Agent boundary philosophy (what AI can/cannot do; Hermes constraints)
+  - UI philosophy (review-first, not dashboard-first)
+  - Long-term directions (non-committed)
+- 新增 `docs/KNOWN_RISKS.md` — 长期风险目录
+  - 8 risk categories: emotional dependency, identity ossification, retrieval leakage, false memory, over-personalization, authority drift, relationship substitution, scope creep
+  - Each with: description, why dangerous, current mitigation, unresolved gaps
+  - Mitigation summary table (prevention/detection/correction)
+- 更新 `docs/ARCHITECTURE.md`
+  - 新增 §1.1 System Philosophy & Temporal Memory Model（引用 VISION.md / KNOWN_RISKS.md）
+  - §7 新增: memory decay, emotional compression, reflection layer, temporal summarization, Dream v2, event graph
+- 这是 **documentation / philosophy phase**，不是 production feature phase
+- Zero production code changes，zero schema changes，zero API changes
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -251,11 +271,25 @@ Phase 1.4-M2a 验证：**py_compile OK, 19/19 + 124/124 + 10/10 all PASS, legacy
 - Production callers for new helpers: 0
 
 ## 下一阶段
-**Phase 1.4 Memory Items Retrieval Bridge — in progress (M1/M2a done).**
+**Phase 1.4 Memory Items Retrieval Bridge — in progress (M1/M2a/M1.5 done).**
 
 Next: **Phase 1.4-M2b — shadow comparison script**
 - `scripts/eval_memory_items_shadow.py`: compare legacy vs memory_items retrieval privacy behavior
 - No production switch, no endpoint changes, no Hermes/Telegram changes
+
+### Future Candidate: Phase 1.5 Candidate Review Policy & Short-Term Observation Layer
+
+**Status**: deferred — do not implement. Revisit after Phase 1.4 retrieval bridge is sealed.
+
+**Motivation**: Current candidate review can become too burdensome if ordinary feelings, complaints, short-term thoughts, and low-risk factual notes all enter manual review.
+
+**Principle**:
+- Ordinary feelings / complaints / short-term thoughts should default to **short-term observation**, not manual review.
+- Short-term observations may be retained for 7–14 days and later compressed into low-weight long-term digests.
+- Medium-risk factual information (grades, course status, project facts, technical environment) can be **auto-committed** with provenance and moderate importance.
+- Manual review should be **reserved for high-risk durable facts**: `identity_fact`, hard relationship facts, `health_baseline`, `risk_flag`, `policy_rule`, financial/legal sensitive facts, `core_blocks` updates, and long-term personality/relationship/health inferences.
+
+**Do not implement now.** Do not change resolver, schema, or candidate API. This is deferred until after Phase 1.4 retrieval bridge / bottom-layer safety work is sealed.
 
 ---
 
@@ -304,6 +338,7 @@ Next: **Phase 1.4-M2b — shadow comparison script**
 - Phase 1.4-M1：Strategy B (dual-read shadow mode) selected — `memories` primary, `memory_items` shadow/eval only, no switch
 - Phase 1.4-M2a：`search_memory_items()` / `get_recent_memory_items()` zero production callers；keyword-only (no embedding)；return dict aligned to legacy format
 - Phase 1.4-M2a：privacy gate identical to Phase 1.1 — same `_PRIVACY_POLICY`, same `COALESCE`, same `!= ALL` for exclude, same sealed exclusion
+- Phase 1.4-M1.5：VISION.md 确立 7-layer memory hierarchy，明确 emotional states ≠ identity；KNOWN_RISKS.md 记录 8 类长期风险及当前 mitigation gap；ARCHITECTURE.md §1.1 引用哲学文档
 
 > tag: phase-1.2-retrieval-cleanup
 > tag: phase-1.3-minimal-eval

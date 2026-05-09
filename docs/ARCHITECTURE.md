@@ -22,6 +22,25 @@ legacy kiwi-mem（FastAPI + PostgreSQL + pgvector）
 
 Server topology and Hermes dual-path模型保持不变（见 §4）。
 
+### 1.1 System Philosophy & Temporal Memory Model
+
+The system is guided by long-term design principles documented in:
+
+- **`VISION.md`** — project vision, memory hierarchy (7 layers), forgetting philosophy, agent boundaries, UI philosophy.
+- **`KNOWN_RISKS.md`** — catalog of inherent risks (identity ossification, retrieval leakage, authority drift, scope creep) with current mitigations and unresolved gaps.
+
+Key architectural commitments:
+
+| Principle | Architectural expression |
+|-----------|--------------------------|
+| Raw event ≠ memory | `memory_events` table (append-only) separate from `memories`/`memory_items` |
+| Candidate ≠ truth | `memory_candidates` with `pending`/`pending_auto`/`requires_review` states |
+| Forgetting is a feature | Heat decay, Dream consolidation, `valid_until` expiry |
+| Retrieval safety > recall | SQL-layer actor privacy gate (Phase 1.1), sealed exclusion, exclude_privacy |
+| Provenance is mandatory | `source_event_ids` chain from event → candidate → committed memory |
+| Agent boundary | Actor privacy matrix; Hermes restricted; no auto-commit for `assistant_inferred` |
+| Temporal model | 7-layer memory hierarchy; emotional states not permanently identity |
+
 **服务拓扑：**
 
 ```
@@ -426,6 +445,10 @@ M2b shadow comparison script — pending
 - basic policy rules 抽离
 - privacy-gated retrieval for `memory_items` primary retrieval（Phase 1.4 shadow → future promotion）
 - eval expansion: recall@10 / precision@10 benchmark (Phase 1.3 covers minimal safety only)
+- **memory decay / temporal cooling**: automated heat decay with configurable cooling curves
+- **emotional compression**: transient emotional cache → summarized trend pipeline (VISION.md layer 2→3)
+- **reflection layer**: periodic agent-led review for contradiction, staleness, and consolidation
+- **temporal summarization**: time-windowed compression of low-signal fragments
 
 **未来可选增强（不在 Phase 1 必须范围内）：**
 - FTS + vector + structured hybrid search with RRF reranker
@@ -434,3 +457,5 @@ M2b shadow comparison script — pending
 - WeChat historical import pipeline
 - Embedding shadow migration
 - Training export with de-identification
+- Memory consolidation (Dream v2): structured fragment fusion with provenance linking
+- Event graph: navigable causal graph linking events, candidates, and committed memories
