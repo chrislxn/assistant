@@ -4739,3 +4739,147 @@ def get_allowed_privacy_levels(actor: str) -> list[str]:
     if not actor or not isinstance(actor, str):
         return list(_DEFAULT_PRIVACY)
     return list(_PRIVACY_POLICY.get(actor, _DEFAULT_PRIVACY))
+
+
+# ============================================================
+# Phase 1.4 M2a — memory_items retrieval helpers
+# ============================================================
+
+async def search_memory_items(
+    query: str,
+    limit: int = 10,
+    *,
+    actor: str = "local_bot",
+    exclude_privacy: "set[str] | None" = None,
+) -> list[dict]:
+    """
+    在 memory_items 表中关键词搜索已提交记忆。
+
+    Phase 1.4: keyword-only（memory_items 无 embedding）。
+    不接入任何 retrieval consumer。仅用于 shadow/eval 比较。
+
+    返回 dict 字段对齐 legacy retrieval:
+        memory_id, content, privacy_level, memory_type, subject_key,
+        predicate_key, confidence, importance, created_at, source_candidate_id
+    """
+    allowed_privacy = get_allowed_privacy_levels(actor)
+    keywords = extract_search_keywords(query)
+    if not keywords:
+        return []
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # WHERE clause: keyword ILIKE matches
+        where_parts = [f"rendered_text ILIKE '%' || ${i+1} || '%'" for i in range(len(keywords))]
+        where_clause = " OR ".join(where_parts)
+        params: list = list(keywords)
+
+        # Privacy gate
+        privacy_idx = len(params) + 1
+        params.append(allowed_privacy)
+        privacy_clause = f"AND COALESCE(privacy_level, 'personal') = ANY(${privacy_idx}::text[])"
+
+        # Optional exclude
+        exclude_clause = ""
+        if exclude_privacy:
+            exclude_idx = len(params) + 1
+            params.append(list(exclude_privacy))
+            exclude_clause = f" AND COALESCE(privacy_level, 'personal') != ALL(${exclude_idx}::text[])"
+
+        limit_idx = len(params) + 1
+        params.append(limit)
+
+        sql = f"""
+            SELECT memory_id, rendered_text, privacy_level, memory_type,
+                   subject_key, predicate_key, confidence, importance,
+                   created_at, source_candidate_id
+            FROM memory_items
+            WHERE ({where_clause})
+              AND status = 'active'
+              AND (valid_to IS NULL OR valid_to > NOW())
+              {privacy_clause}{exclude_clause}
+            ORDER BY importance DESC, created_at DESC
+            LIMIT ${limit_idx}
+        """
+        rows = await conn.fetch(sql, *params)
+
+    return [
+        {
+            "memory_id": str(r["memory_id"]),
+            "id": str(r["memory_id"]),          # compat alias
+            "content": r["rendered_text"],
+            "rendered_text": r["rendered_text"],
+            "privacy_level": r["privacy_level"],
+            "memory_type": r["memory_type"],
+            "subject_key": r["subject_key"] or "",
+            "predicate_key": r["predicate_key"] or "",
+            "confidence": r["confidence"],
+            "importance": r["importance"],
+            "created_at": r["created_at"],
+            "source_candidate_id": str(r["source_candidate_id"]) if r["source_candidate_id"] else None,
+        }
+        for r in rows
+    ]
+
+
+async def get_recent_memory_items(
+    limit: int = 20,
+    *,
+    actor: str = "local_bot",
+    exclude_privacy: "set[str] | None" = None,
+) -> list[dict]:
+    """
+    获取 memory_items 表中最近的已提交记忆。
+
+    Phase 1.4: 不接入任何 retrieval consumer。仅用于 shadow/eval 比较。
+
+    返回 dict 字段对齐 legacy retrieval:
+        memory_id, content, privacy_level, memory_type, subject_key,
+        predicate_key, confidence, importance, created_at, source_candidate_id
+    """
+    allowed_privacy = get_allowed_privacy_levels(actor)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        params: list = [allowed_privacy]
+        privacy_clause = "AND COALESCE(privacy_level, 'personal') = ANY($1::text[])"
+
+        exclude_clause = ""
+        if exclude_privacy:
+            exclude_idx = len(params) + 1
+            params.append(list(exclude_privacy))
+            exclude_clause = f" AND COALESCE(privacy_level, 'personal') != ALL(${exclude_idx}::text[])"
+
+        limit_idx = len(params) + 1
+        params.append(limit)
+
+        sql = f"""
+            SELECT memory_id, rendered_text, privacy_level, memory_type,
+                   subject_key, predicate_key, confidence, importance,
+                   created_at, source_candidate_id
+            FROM memory_items
+            WHERE status = 'active'
+              AND (valid_to IS NULL OR valid_to > NOW())
+              {privacy_clause}{exclude_clause}
+            ORDER BY created_at DESC
+            LIMIT ${limit_idx}
+        """
+        rows = await conn.fetch(sql, *params)
+
+    return [
+        {
+            "memory_id": str(r["memory_id"]),
+            "id": str(r["memory_id"]),
+            "content": r["rendered_text"],
+            "rendered_text": r["rendered_text"],
+            "privacy_level": r["privacy_level"],
+            "memory_type": r["memory_type"],
+            "subject_key": r["subject_key"] or "",
+            "predicate_key": r["predicate_key"] or "",
+            "confidence": r["confidence"],
+            "importance": r["importance"],
+            "created_at": r["created_at"],
+            "source_candidate_id": str(r["source_candidate_id"]) if r["source_candidate_id"] else None,
+        }
+        for r in rows
+    ]
