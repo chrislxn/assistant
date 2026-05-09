@@ -58,7 +58,7 @@ Five review policy channels, from lowest to highest human involvement:
 
 ### Channel 2: `medium_factual_auto_commit`
 
-- **Action**: Auto-commit to `memory_items` + `memories` with provenance, moderate importance (5-7), and `source_trust=system_generated`.
+- **Action**: Auto-commit to `memory_items` + `memories` with provenance, moderate importance (5-7). `source_trust` depends on the source: `user_direct` / `user_confirmed` for user-stated grades, course status, project facts, and technical environment. `system_generated` is reserved for trusted system facts (internal project state, verified `health_observation_summary`, etc.). `assistant_inferred` and `third_party_doc` should not auto-commit user identity, preferences, grades, relationships, or personality facts.
 - **Review**: No manual review required. Written with `confidence` metadata.
 - **Examples**:
   - "CSC165 51, STA237 68" (course grades)
@@ -174,7 +174,7 @@ Each candidate is evaluated across the following dimensions before channel assig
 | **durability** | scale (hours / days / weeks / years) | How long is this likely to remain true? |
 | **usefulness** | scale | Will retrieving this in 6 months help the user? |
 | **risk** | scale | What is the harm if this is wrong? |
-| **source_trust** | enum | `user_stated` / `assistant_inferred` / `system_generated` |
+| **source_trust** | enum | `user_direct` / `user_confirmed` / `assistant_inferred` / `system_generated` / `third_party_doc` / `unknown` |
 | **recurrence** | count or boolean | Has this pattern been observed before? |
 | **privacy_level** | enum | `public_like` / `personal` / `sensitive` / `restricted` / `sealed` |
 | **stability** | scale | Is this likely a transient state or a stable trait? |

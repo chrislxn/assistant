@@ -17,6 +17,8 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "kiwi-mem"))
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -88,7 +90,7 @@ async def _insert_legacy(pool, title: str, content: str, privacy_level: str) -> 
     return row["id"]
 
 
-async def _insert_memory_item(pool, title: str, content: str, privacy_level: str) -> str:
+async def _insert_memory_item(pool, content: str, privacy_level: str) -> str:
     row = await pool.fetchrow(
         """INSERT INTO memory_items (rendered_text, privacy_level, memory_type, source_trust, subject_key, importance, status)
            VALUES ($1, $2, 'test_eval', 'system_generated', $3, 1, 'active')
@@ -111,7 +113,7 @@ async def setup_test_data(anchor: str):
         lid = await _insert_legacy(pool, title, content, level)
         legacy_ids.append(lid)
 
-        mid = await _insert_memory_item(pool, title, content, level)
+        mid = await _insert_memory_item(pool, content, level)
         item_ids.append(mid)
 
     return legacy_ids, item_ids
@@ -123,12 +125,12 @@ async def cleanup_test_data(legacy_ids, item_ids):
 
     legacy_del = 0
     for lid in legacy_ids:
-        result = await pool.execute("DELETE FROM memories WHERE id = $1", lid)
+        await pool.execute("DELETE FROM memories WHERE id = $1", lid)
         legacy_del += 1
 
     items_del = 0
     for mid in item_ids:
-        result = await pool.execute("DELETE FROM memory_items WHERE memory_id = $1::uuid", mid)
+        await pool.execute("DELETE FROM memory_items WHERE memory_id = $1::uuid", mid)
         items_del += 1
 
     # Fallback: delete by eval:shadow subject_key
@@ -167,7 +169,6 @@ async def main():
     from database import (
         search_memories, get_recent_memories,
         search_memory_items, get_recent_memory_items,
-        get_allowed_privacy_levels,
         close_pool,
     )
 
