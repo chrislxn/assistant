@@ -1,8 +1,8 @@
-# STATUS — 最后更新：2026-05-08
+# STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.0 Memory Lifecycle closure completed** — candidate resolver + memory_items + review queue API 全部就绪。
-Phase 0.5 completed / sealed；Hermes conservative integration completed。
+**Phase 1.1-M2 Privacy Gate completed** — SQL-layer legacy memories retrieval 全量接入 actor privacy gate。
+Phase 1.0 Memory Lifecycle closure completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
 - memory_items (UUID) 作为新 committed memory 层，memories 兼容双写
@@ -108,6 +108,39 @@ Memory Path 具体交付：
   - 测试数据 SQL 清理干净，回归通过
 - **结果：25/25 PASS，0 WARN，0 FAIL** — Hermes conservative memory path 完整进入 Phase 1.0 生命周期，不需要代码改动
 
+### Phase 1.1-M1 — Privacy Policy Helper
+
+- 新增 `get_allowed_privacy_levels(actor: str) -> list[str]`
+- actor → allowed privacy_levels 映射表 (`_PRIVACY_POLICY`)
+- `_DEFAULT_PRIVACY` = `["public_like", "personal"]`（unknown actor fallback）
+- `sealed` 永远不被任何 actor 返回
+- 不做 actor_scope 过滤（留给后续）
+- 不做 retrieval SQL 变更
+
+### Phase 1.1-M2 — Legacy Memories Retrieval Privacy Gate
+
+- **SQL-layer filtering**：`COALESCE(m.privacy_level, 'personal') = ANY(allowed::text[])` 应用于所有 legacy memories 检索路径
+- **Retrieval 函数变更**：search_memories / _vector_search / _keyword_search / get_recent_memories / /debug/memories (含 title 路径) 全接入 actor gate
+- **Actor 调用方传参**：
+  - /v1/chat/completions → actor="api_client"
+  - Telegram bot (search_memory, get_persona) → actor="telegram_bot"
+  - Hermes MCP (4 calls) → actor="hermes_agent" (HERMES_ACTOR)
+  - /debug/memories → actor query param，默认 "local_bot"
+  - AI extraction / dedup (内部) → 默认 "local_bot"
+- **Actor privacy matrix**（after BLOCK-1 fix）：
+  - local_bot / api_client: public_like, personal, sensitive, restricted
+  - telegram_bot: public_like, personal, sensitive（不含 restricted）
+  - claude_mcp: public_like, personal, sensitive
+  - hermes_agent / dev_agent / unknown: public_like, personal
+  - sealed: never returned
+- **exclude_privacy 交集语义**：`= ANY(allowed) AND != ALL(excluded)`（SQL 层取交集，非覆盖）
+- **Bug fix (BLOCK-2)**：/debug/memories title + exclude_privacy 参数索引错误修复（${i+4}→${i+3}, LIMIT $3→$limit_idx）
+- **WARN-4 注释**：Hermes EXCLUDE_PRIVACY=sealed,restricted 保留为二级防线；sensitive 排除完全依赖 actor gate
+- Write path, resolver, core_blocks, health-db 全部未改
+- Helper policy tests: 19/19 PASS
+- Retrieval privacy gate tests: 25/25 PASS
+- BLOCK-2 title+exclude 专项: 6/6 PASS
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -116,16 +149,15 @@ Phase 1.0 M1 验证：**schema + helpers + regression 全通过**
 Phase 1.0 M2 验证：**28/28 resolver scenario tests + regression 全通过**
 Phase 1.0 M3 验证：**15/15 review queue API tests + status guards + regression 全通过**
 Phase 1.0 M8 验证：**25/25 Hermes → Phase 1.0 lifecycle 端到端通过**
+Phase 1.1-M1 验证：**19/19 helper policy tests + regression 全通过**
+Phase 1.1-M2 验证：**25/25 retrieval gate + 6/6 title+exclude + 3/3 regression 全通过**
 
 ## 下一阶段
-**Phase 1.0 Memory Lifecycle closure — completed.**
-按照 PHASE_1_PLAN.md §4 实施顺序，M1/M2/M3 全部完成后进入观察期（建议 1-2 周）。
-观察期通过后进入 Phase 1.1 — Retrieval Safety（privacy-gated retrieval + eval set）。
-
-Phase 1.1 推荐方向：
-- privacy-gated retrieval（SQL 层，actor privacy matrix）
+**Phase 1.1-M2 Privacy Gate — completed.**
+Phase 1.1-M3 推荐方向：
 - minimal eval set（10-15 条，positive retrieval + negative leakage）
 - eval runner + seed data
+- `scripts/test_privacy_gate_retrieval.py` 自动化端到端测试（当前为手动验证）
 
 Phase 1.2（后续）：
 - memory_type cleanup（减少 legacy 比例）
@@ -156,6 +188,13 @@ Phase 1.2（后续）：
 - Hermes 不能通过 health-db 通道读取 memories / core_blocks 等记忆表（REVOKE 执行）
 - health-db 使用 hermes_readonly 只读用户，替换原 kiwi 主账号（M7.2）
 - 未来健康上下文注入 memory path 需新增 hermes_get_health_context 或 intent='health' 专用路径，不应扩展 default Hermes context whitelist
+- Phase 1.1：actor → privacy_level 映射使用 hard-coded `_PRIVACY_POLICY` dict，不做查表
+- Phase 1.1-M1：不做 actor_scope 过滤，不做 retrieval SQL 变更
+- Phase 1.1-M2：所有 legacy memories 检索路径必须在 SQL 层用 `COALESCE(privacy_level, 'personal') = ANY(bind_param::text[])` 过滤，不依赖 Python post-filter
+- telegram_bot 不应读取 restricted 级别记忆（BLOCK-1 fix：PHASE_1_PLAN.md §2.3 明确规定）
+- Hermes 的 sensitive 排除完全依赖 actor privacy gate（SQL 层）；EXCLUDE_PRIVACY=sealed,restricted 是二级 blocklist，不涵盖 sensitive
+- /debug/memories title + exclude_privacy 路径参数索引：$1=title, $2=allowed_privacy, $3..$N=excluded_levels, $limit_idx=limit
+- Phase 1.1-M2 不改 write path、resolver、core_blocks、health-db 只读配置
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
