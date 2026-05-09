@@ -1,8 +1,8 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.3 Minimal Evaluation Harness completed** — 10/10 eval cases, query-based retrieval harness。
-Phase 1.0/1.1/1.2 completed / sealed；Hermes conservative integration completed。
+**Phase 1.4 Memory Items Retrieval Bridge in progress (M1/M2a completed)** — shadow helpers ready, M2b shadow script pending。
+Phase 1.0/1.1/1.2/1.3 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
 - **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，但尚未接入 retrieval
@@ -203,6 +203,30 @@ Memory Path 具体交付：
 - Machine-readable JSON summary: total / passed / failed / leak_count / missing_expected_count / cases / cleanup_deleted / cleanup_remaining
 - Exit 0 on all pass, exit 1 on any failure
 
+### Phase 1.4-M1 — Design Document & Schema Audit
+
+- 新增 `docs/MEMORY_ITEMS_RETRIEVAL_BRIDGE.md`（268 lines）
+- Three bridge strategies compared: legacy-only (A), dual-read shadow (B), memory_items primary (C)
+- **Selected Strategy B**: dual-read shadow mode
+- `memories` remains primary retrieval source; `memory_items` retrieval is shadow/eval only
+- No production retrieval switch in Phase 1.4
+- Helper signatures defined: `search_memory_items()` / `get_recent_memory_items()`
+- Safety invariants enumerated (9 rules, matching Phase 1.1)
+- 12 explicit non-goals
+
+### Phase 1.4-M2a — Shadow Retrieval Helpers
+
+- `kiwi-mem/database.py`: 新增 `search_memory_items()` + `get_recent_memory_items()`（+144 lines）
+- Both use `get_allowed_privacy_levels(actor)` — same Phase 1.1 `_PRIVACY_POLICY`
+- SQL-layer privacy gate: `COALESCE(privacy_level, 'personal') = ANY(bind_param::text[])`
+- `exclude_privacy` subtractive: `!= ALL(bind_param::text[])`
+- Filters: `status = 'active'`, `(valid_to IS NULL OR valid_to > NOW())`
+- Keyword-only search via `extract_search_keywords()` + `rendered_text ILIKE`
+- Recent via `ORDER BY created_at DESC`
+- No vector, no embedding, no RRF
+- Return dict aligned to legacy format: `memory_id`, `id` (alias), `content` (mapped from `rendered_text`), `privacy_level`, `memory_type`, `subject_key`, `predicate_key`, `confidence`, `importance`, `created_at`, `source_candidate_id`
+- **Zero production callers** — not wired to any endpoint or consumer
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -219,18 +243,19 @@ Phase 1.2-M2 验证：**124/124 local_bot +15 coverage**
 Phase 1.2-M3 验证：**124/124 + 19/19, no SQL logic change**
 Phase 1.3-M1 验证：**10 cases defined, all fields valid**
 Phase 1.3-M2 验证：**10/10 PASS, leak_count=0, missing_expected_count=0**
+Phase 1.4-M1 验证：**design doc reviewed, strategy B selected**
+Phase 1.4-M2a 验证：**py_compile OK, 19/19 + 124/124 + 10/10 all PASS, legacy unchanged**
 - cleanup: deleted=5, remaining=0
 - Test data residue: memories 0 / memory_candidates 0 / memory_items 0
 - memory_events: benign append-only eval/test provenance records (non-removable, acceptable)
+- Production callers for new helpers: 0
 
 ## 下一阶段
-**Phase 1.3 Minimal Evaluation Harness — completed (M1/M2).**
+**Phase 1.4 Memory Items Retrieval Bridge — in progress (M1/M2a done).**
 
-Phase 1.4 candidates:
-- Memory Items Retrieval Bridge Planning（memory_items → primary retrieval design, planning only）
-- Retrieval Eval Expansion（additional query patterns, keyword vs semantic search comparison）
-
-Recommended next: **Memory Items Retrieval Bridge Planning** (planning only)
+Next: **Phase 1.4-M2b — shadow comparison script**
+- `scripts/eval_memory_items_shadow.py`: compare legacy vs memory_items retrieval privacy behavior
+- No production switch, no endpoint changes, no Hermes/Telegram changes
 
 ---
 
@@ -276,6 +301,9 @@ Recommended next: **Memory Items Retrieval Bridge Planning** (planning only)
 - Phase 1.3-M1：eval cases 使用 query_template + placeholder expansion（`{anchor}` / `{<level>_tag}`），由 runner 展开，不写死物理查询
 - Phase 1.3-M2：eval runner 不 import test_privacy_gate_retrieval.py 或 database.py；stdlib only；tag matching 通过嵌入 content 的 `tag:<level_tag>` 实现
 - Phase 1.3-M2：shared anchor 保证所有 5 条 test memory 同时被关键词搜索命中，actor privacy gate 决定实际可见性
+- Phase 1.4-M1：Strategy B (dual-read shadow mode) selected — `memories` primary, `memory_items` shadow/eval only, no switch
+- Phase 1.4-M2a：`search_memory_items()` / `get_recent_memory_items()` zero production callers；keyword-only (no embedding)；return dict aligned to legacy format
+- Phase 1.4-M2a：privacy gate identical to Phase 1.1 — same `_PRIVACY_POLICY`, same `COALESCE`, same `!= ALL` for exclude, same sealed exclusion
 
 > tag: phase-1.2-retrieval-cleanup
 > tag: phase-1.3-minimal-eval
