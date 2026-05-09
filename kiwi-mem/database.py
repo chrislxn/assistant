@@ -1970,13 +1970,11 @@ async def get_recent_memories(limit: int = 20, category_id: int = None, project_
             proj_clause = f"AND m.project_id = '{project_id}'"
 
         # Phase 1.1：actor privacy gate（SQL 层）
-        privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($2::text[])"
-        exclude_clause = ""
-        if exclude_privacy:
-            exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($3::text[])"
-
+        # privacy/exclude clauses use per-branch param indices to avoid $N mismatch
         if category_id is not None:
+            privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($2::text[])"
             if exclude_privacy:
+                exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($3::text[])"
                 return await conn.fetch(
                     f"""SELECT m.id, m.content, m.importance, m.created_at,
                               COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
@@ -2009,7 +2007,9 @@ async def get_recent_memories(limit: int = 20, category_id: int = None, project_
                     category_id, allowed_privacy, limit,
                 )
         else:
+            privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($1::text[])"
             if exclude_privacy:
+                exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($2::text[])"
                 return await conn.fetch(
                     f"""SELECT m.id, m.content, m.importance, m.created_at,
                               COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
