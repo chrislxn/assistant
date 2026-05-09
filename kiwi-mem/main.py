@@ -2676,7 +2676,7 @@ async def post_access_log(request: Request):
 
 @app.get("/admin/candidates")
 async def admin_list_candidates(
-    status: str = "pending",
+    status: str = "pending,requires_review",
     limit: int = 20,
     source_trust: str = "",
     memory_type: str = "",
@@ -2685,7 +2685,8 @@ async def admin_list_candidates(
     列出 candidates（受 AdminAuthMiddleware 保护）。
 
     Query params:
-      - status: pending (default) | pending_auto | requires_review | committed | rejected
+      - status: pending,requires_review (default) | pending | requires_review | observation_only | expired | committed | rejected
+                Comma-separated values supported, e.g. "pending,requires_review"
       - limit: 1-100 (default 20)
       - source_trust: optional filter
       - memory_type: optional filter
@@ -2739,6 +2740,24 @@ async def admin_commit_candidate(candidate_id: str):
         return JSONResponse(status_code=503, content={"error": "记忆系统未启用"})
 
     try:
+        # Phase 1.5-M3a: block commit of observation_only / expired candidates
+        cand = await db_get_candidate(candidate_id)
+        if cand is None:
+            return JSONResponse(status_code=404, content={"error": "candidate not found", "candidate_id": candidate_id})
+        cstatus = cand.get("status", "")
+        if cstatus == "observation_only":
+            return JSONResponse(status_code=409, content={
+                "error": "observation_only candidates are short-term observations and cannot be committed directly",
+                "candidate_id": candidate_id,
+                "status": cstatus,
+            })
+        if cstatus == "expired":
+            return JSONResponse(status_code=409, content={
+                "error": "expired candidates cannot be committed",
+                "candidate_id": candidate_id,
+                "status": cstatus,
+            })
+
         result = await resolve_candidate(candidate_id, force_commit=True)
         if result["action"] == "error":
             err_reason = result.get("reason", "")

@@ -671,6 +671,11 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_candidates_type_status
             ON memory_candidates (memory_type, status)
         """)
+        # Phase 1.5-M3a: nullable TTL for observation_only candidates
+        await conn.execute("""
+            ALTER TABLE memory_candidates
+            ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ
+        """)
 
         # 3. core_blocks — 版本化、审批控制的核心记忆（不按 importance 排序选取）
         await conn.execute("""
@@ -4451,19 +4456,27 @@ async def resolve_candidate(candidate_id: str, *, force_commit: bool = False) ->
 
 async def list_candidates(
     *,
-    status: str = "pending",
+    status: str = "pending,requires_review",
     limit: int = 20,
     source_trust: Optional[str] = None,
     memory_type: Optional[str] = None,
 ) -> list[dict]:
     """
     列出 candidates，支持按 status / source_trust / memory_type 筛选。
+
+    status accepts comma-separated values, e.g. "pending,requires_review".
+    Default excludes observation_only, expired, committed, and rejected.
     返回列表含 age_days 计算字段。
     """
     pool = await get_pool()
     limit = max(1, min(limit, 100))
-    where = ["status = $1"]
-    params: list = [status]
+
+    statuses = [s.strip() for s in status.split(",") if s.strip()]
+    if not statuses:
+        statuses = ["pending"]
+
+    where = ["status = ANY($1::text[])"]
+    params: list = [statuses]
 
     if source_trust:
         where.append(f"source_trust = ${len(params) + 1}")
