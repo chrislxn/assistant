@@ -48,6 +48,13 @@ Phase 0.5 completed / sealed；Hermes conservative integration completed。
 - MCP 不允许直接写 core_blocks
 
 ### M7 — Hermes Conservative Integration（受限 Agent 接入）
+
+**Hermes Agent 双路径读取模型：**
+- **Health Path**: `health-db` MCP → PostgreSQL 直连 (hermes_readonly, SELECT only) → `health_summary` + `raw_health_data`
+- **Memory Path**: `hermes_mcp.py` → kiwi-mem HTTP → filtered memories + whitelisted core_blocks
+- 两条路径独立，不可混淆。Health access 不是 memory context access。
+
+Memory Path 具体交付：
 - 新增 `kiwi-mem/hermes_mcp.py`：5 个受限工具（hermes_observe / hermes_propose_memory / hermes_search / hermes_get_recent / hermes_get_context）
 - 新增 3 个 REST 端点：POST /events（append_event 写入观察）、POST /candidates（memory_candidates 提案）、POST /events/access-log（审计日志）
 - GET /debug/memories 新增 `exclude_privacy` 参数，支持排除 sealed/restricted
@@ -57,8 +64,15 @@ Phase 0.5 completed / sealed；Hermes conservative integration completed。
 ### M7.1 — Hermes Core Block Whitelist（Security WARN #5 修复）
 - Hermes get_context 只注入 core block whitelist：**response_policy + active_projects**
 - Hermes **不注入**所有 approved core_blocks：health_baseline / relationship_context / test.block 不在默认 Hermes context 中
-- 未来如需健康上下文，应新增 `hermes_get_health_context` 或 intent='health' 专用路径，而非扩展默认 whitelist
+- 未来如需健康上下文注入 memory path，应新增 `hermes_get_health_context` 或 intent='health' 专用路径，而非扩展默认 whitelist
 - HERMES_CORE_WHITELIST 定义在 `hermes_mcp.py`，与 main chat path 白名单（main.py:472）保持同步
+
+### M7.2 — Hermes Health-DB Access Hardening
+- health-db MCP 连接字符串改为 `hermes_readonly` 只读用户（替换原 `kiwi` 主账号）
+- `hermes_readonly` 仅持有 `health_summary` + `raw_health_data` 的 SELECT 权限
+- 明确 REVOKE: memories, memory_items, memory_candidates, core_blocks, memory_events, memory_access_log
+- Hermes 不能通过 health-db 通道读取记忆表，不能写入任何表
+- 密码保存于 `~/.hermes/.env`（`HERMES_DB_READONLY_PASSWORD`）
 
 ### Phase 1.0 M1 — memory_items Schema
 - 建表 `memory_items`（21 columns, UUID PK, 6 indexes, 2 FKs, 不含 embedding）
@@ -82,6 +96,18 @@ Phase 0.5 completed / sealed；Hermes conservative integration completed。
 - HTTP 状态码：404/409/400 按 error reason 分流
 - 所有 admin endpoints 受 `AdminAuthMiddleware` 保护
 
+### Phase 1.0 M8 — Hermes → Phase 1.0 Lifecycle 端到端验证
+- **场景**：hermes_propose_memory → memory_candidates (pending) → admin review API → commit → memory_items + legacy memories
+- **验证通过**：
+  - hermes_propose_memory 只写 memory_candidates (status=pending)，不自动写 memory_items / memories
+  - admin review API (list/detail/commit) 完整可操作 Hermes-origin candidates
+  - resolve_candidate(force_commit=True) → dual-write: memory_items (UUID, source_candidate_id) + legacy memories (source='candidate_commit')
+  - 三表 (candidates / memory_items / memories) source_trust / privacy_level / actor_scope 一致
+  - 重复 commit → HTTP 409 "already committed"，不重复写行
+  - Hermes 仍不能写 core_blocks 或直接写 committed memory（provenance 约束保持）
+  - 测试数据 SQL 清理干净，回归通过
+- **结果：25/25 PASS，0 WARN，0 FAIL** — Hermes conservative memory path 完整进入 Phase 1.0 生命周期，不需要代码改动
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -89,6 +115,7 @@ Security review 验证：**test.block 过滤通过**（Hermes context 只含 res
 Phase 1.0 M1 验证：**schema + helpers + regression 全通过**
 Phase 1.0 M2 验证：**28/28 resolver scenario tests + regression 全通过**
 Phase 1.0 M3 验证：**15/15 review queue API tests + status guards + regression 全通过**
+Phase 1.0 M8 验证：**25/25 Hermes → Phase 1.0 lifecycle 端到端通过**
 
 ## 下一阶段
 **Phase 1.0 Memory Lifecycle closure — completed.**
@@ -124,7 +151,11 @@ Phase 1.2（后续）：
 - Hermes 写入走 POST /events（append-only event）+ POST /candidates（status=pending），不直接写 memories / core_blocks
 - Hermes 读取默认排除了 sealed + restricted（EXCLUDE_PRIVACY = "sealed,restricted"）
 - Hermes get_context core block whitelist = {response_policy, active_projects}；health_baseline / relationship_context 不属于默认 Hermes context
-- 未来健康上下文需新增 hermes_get_health_context 或 intent='health' 专用路径
+- Hermes 双路径读取模型：Health Path (health-db MCP, hermes_readonly, 直连 PostgreSQL) 与 Memory Path (hermes_mcp.py, kiwi-mem HTTP) 是两条独立通道，不可混淆
+- Health access 不是 memory context access。Health path 专用于健康数据查询，不走记忆检索；Memory path 不读取 health_summary / raw_health_data
+- Hermes 不能通过 health-db 通道读取 memories / core_blocks 等记忆表（REVOKE 执行）
+- health-db 使用 hermes_readonly 只读用户，替换原 kiwi 主账号（M7.2）
+- 未来健康上下文注入 memory path 需新增 hermes_get_health_context 或 intent='health' 专用路径，不应扩展 default Hermes context whitelist
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md

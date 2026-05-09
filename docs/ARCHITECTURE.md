@@ -22,19 +22,38 @@ legacy kiwi-mem（FastAPI + PostgreSQL + pgvector）
 **服务拓扑：**
 
 ```
-iPhone (Health Auto Export)     Telegram User
-    │                               │
-    ▼                               ▼
-Cloudflare Tunnel (agent.xeon.im)  Telegram Bot (bot.py)
-    │                               │
-    ▼                               ▼
-kiwi-mem :8080  ←─────────────  claude.ai MCP (locapmemo)
-(FastAPI 记忆网关)                 6 tools
-    │
-    ▼
-PostgreSQL :5432 + pgvector
-(memory_events + memory_candidates + memories + core_blocks + memory_access_log + raw_health_data)
+iPhone (Health Auto Export)     Telegram User        Hermes Agent (~/.hermes/)
+    │                               │                 │
+    ▼                               ▼                 │
+Cloudflare Tunnel (agent.xeon.im)  Telegram Bot       │
+    │                               │                 │
+    ▼                               ▼                 │
+kiwi-mem :8080  ←─────────────  claude.ai MCP         │
+(FastAPI 记忆网关)                 (locapmemo, 6 tools)│
+    │                                                  │
+    ▼                          ┌───────────────────────┘
+PostgreSQL :5432 + pgvector   │
+    ▲                          │
+    │                          │
+    └──── health-db MCP ───────┘    ←──── hermes_mcp.py (/hermes/mcp, 5 tools)
+     (direct SQL: health_summary          (REST: POST /events, /candidates, /events/access-log)
+      + raw_health_data only)             (filtered memories, whitelisted core_blocks)
 ```
+
+**Hermes Agent 双路径读取模型：**
+
+Hermes 有两条**独立**的读取路径，不可混淆：
+
+| 路径 | 通道 | 读取内容 | 机制 |
+|------|------|---------|------|
+| **Health** | `health-db` MCP (PostgreSQL 直连) | `health_summary`, `raw_health_data` | hermes_readonly 用户, SELECT only |
+| **Memory** | `hermes_mcp.py` → kiwi-mem HTTP | 过滤后的 memories, whitelisted core_blocks | 5 restricted tools, 不直连 DB |
+
+- Health 路径是**健康数据专用**通道，不走 kiwi-mem HTTP，不走记忆检索逻辑
+- Memory 路径通过 hermes_mcp.py 受限接入：只能 observe events、提案 pending candidates、读过滤记忆、获取白名单 context
+- Health access **不应被误认为** default memory context access
+- Hermes **不能**写入 core_blocks、不能 auto-commit candidates、不能注入 `health_baseline` 或 `relationship_context`
+- 未来 Phase 2.5 / health architecture 应新增 `hermes_get_health_context` 或显式 health intent，**不应**扩展 default Hermes context whitelist
 
 ---
 
@@ -203,6 +222,38 @@ chat request
 - `active_projects` 单独请求 `GET /core-blocks/active_projects`
 - 请求 kiwi-mem `/v1/chat/completions` 时传 `skip_core_blocks=True` 避免重复注入
 
+**Hermes Agent 双路径读取（独立于主 chat path）：**
+
+```
+Hermes turn
+  ├── Health Path (独立，不经过 kiwi-mem HTTP)
+  │     → health-db MCP (PostgreSQL 直连, hermes_readonly)
+  │     → SELECT FROM health_summary, raw_health_data
+  │     → 专用于健康数据查询，不走记忆检索
+  │
+  └── Memory Path (受限，经过 kiwi-mem HTTP)
+        → hermes_mcp.py (/hermes/mcp)
+        → 5 restricted tools:
+            hermes_get_context
+              → 加载 core_blocks → 白名单过滤: response_policy + active_projects
+              → 排除: test.block / health_baseline / relationship_context
+              → 搜索 memory (排除 sealed/restricted)
+              → 获取 recent (排除 sealed/restricted)
+            hermes_search / hermes_get_recent
+              → 读 memories, 排除 sealed/restricted
+            hermes_observe / hermes_propose_memory
+              → POST /events (append-only event)
+              → POST /candidates (status=pending, source_trust=assistant_inferred)
+              → 不直接写 memories / core_blocks
+```
+
+**关键约束：**
+- Health path 和 Memory path 是**两条独立通道**，不可互相替代
+- Hermes 不能通过 health-db MCP 读取 `memories`、`core_blocks` 等表（已被 REVOKE）
+- Hermes 不能通过 hermes_mcp.py 读取 `health_summary`、`raw_health_data`（不在此路径的 API 范围内）
+- `health_baseline` 和 `relationship_context` 不在 Hermes default context whitelist 中，不注入
+- 未来如需健康上下文注入 Memory path，应新增 `hermes_get_health_context` 或显式 health intent，**不应**扩展 default Hermes context whitelist
+
 ---
 
 ## 5. Core Block Policy
@@ -224,18 +275,23 @@ chat request
 
 ## 6. Agent Entry Rules
 
-| Agent | 写入方式 | 可写 memories | 可写 candidates | 可写 core_blocks |
-|-------|---------|:---:|:---:|:---:|
-| Manual user (via API) | `POST /debug/memories` | ✅ user_direct | — | — |
-| Health pipeline | `POST /data/health` | ✅ system_generated | — | — |
-| AI extraction (internal) | background task | ✅ assistant_inferred | ✅ pending | — |
-| MCP (Claude.ai) | `POST /debug/memories` via mcp_server | ✅ assistant_inferred | — | ❌ |
-| Telegram Bot | `POST /debug/memories` via HTTP | ✅ user_direct | — | ❌ |
+| Agent | 写入方式 | 可写 memories | 可写 candidates | 可写 core_blocks | 读取路径 |
+|-------|---------|:---:|:---:|:---:|---------|
+| Manual user (via API) | `POST /debug/memories` | ✅ user_direct | — | — | HTTP API |
+| Health pipeline | `POST /data/health` | ✅ system_generated | — | — | HTTP API |
+| AI extraction (internal) | background task | ✅ assistant_inferred | ✅ pending | — | 直连 DB |
+| MCP (Claude.ai) | `POST /debug/memories` via mcp_server | ✅ assistant_inferred | — | ❌ | memory MCP |
+| Telegram Bot | `POST /debug/memories` via HTTP | ✅ user_direct | — | ❌ | HTTP API |
+| **Hermes Agent** | `POST /events` + `POST /candidates` via hermes_mcp | ❌ | ✅ pending only | ❌ | **双路径**: health-db MCP (健康) + hermes_mcp (记忆) |
 
 **当前规则：**
 - 外部 agent 写入均为 `assistant_inferred`，应保持 candidate-only（Phase 1 resolver 接管前暂时落到 memories 表，带 provenance）
 - 外部 agent 不允许直接写 `core_blocks`
 - 不允许 MCP 或外部 agent 调用数据库直写
+- **Hermes Agent 特殊规则：**
+  - 不直接写 memories，只通过 `POST /events` (append-only) + `POST /candidates` (pending)
+  - health-db MCP 专用于健康数据读取，与 memory context 完全分离
+  - 不注入 `health_baseline` 或 `relationship_context` 到 default context
 
 ---
 

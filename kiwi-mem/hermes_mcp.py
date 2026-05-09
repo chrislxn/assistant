@@ -1,15 +1,32 @@
 """
-Hermes MCP Server — 受限 Agent 接入层
-===========================================================
+Hermes MCP Server — 受限 Agent 接入层（Memory Path Only）
+============================================================
 
 Hermes 是一个受限的外部 agent，权限远低于主 MCP agent (claude_mcp)。
+
+**重要：Hermes 有两条独立的读取路径，此模块只负责 Memory Path：**
+
+  Health Path（独立，不经过此模块）:
+    - health-db MCP → PostgreSQL 直连 (hermes_readonly, SELECT only)
+    - 读取 health_summary + raw_health_data
+    - 健康数据专用通道，不走 kiwi-mem HTTP
+
+  Memory Path（此模块负责）:
+    - /hermes/mcp → kiwi-mem HTTP API
+    - 5 restricted tools, 受限记忆访问
+    - 不直连数据库
 
 核心限制：
 - 读取：不返回 sealed / restricted 记忆
 - 写入观察：仅通过 append_event (POST /events)，不直接写 memories
 - 提取记忆：只写 memory_candidates(status='pending')，不写 committed memory
 - core_blocks：只读白名单（response_policy + active_projects），不可写
+- 不注入 health_baseline / relationship_context 到 default context
 - get_context：actor_scope='hermes_agent'，每次调用写 memory_access_log
+
+Health Path 和 Memory Path 不可混淆。Health access 不应被误认为 memory context access。
+未来 Phase 2.5 如需健康上下文注入，应新增 hermes_get_health_context 或显式 health intent，
+不应扩展 default Hermes context whitelist。
 
 挂载路径：/hermes → URL：/hermes/mcp
 工具：hermes_observe, hermes_propose_memory, hermes_search, hermes_get_recent, hermes_get_context
