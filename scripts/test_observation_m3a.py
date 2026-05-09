@@ -144,14 +144,31 @@ async def _insert_test_candidate(pool, spec: dict) -> str:
 
 
 async def _cleanup_all(pool, candidate_ids: list):
-    """Delete all test candidates and verify cleanup."""
+    """Delete all test candidates and verify cleanup.
+
+    Order matters: delete child tables (memory_items) and related data
+    (memories) before deleting parent (memory_candidates), so fallback
+    subqueries against memory_candidates still have rows to match.
+    """
+    # 1. Delete memory_items by known source_candidate_ids
+    for cid in candidate_ids:
+        await pool.execute("DELETE FROM memory_items WHERE source_candidate_id = $1::uuid", cid)
+
+    # 2. Delete legacy memories by test tag
+    await pool.execute("DELETE FROM memories WHERE content LIKE $1", f"%{TEST_TAG}%")
+
+    # 3. Delete any stray memory_items linked to test candidates (fallback)
+    await pool.execute(
+        "DELETE FROM memory_items WHERE source_candidate_id::text IN "
+        "(SELECT candidate_id::text FROM memory_candidates WHERE subject_key LIKE 'eval:m3a:%')"
+    )
+
+    # 4. Delete memory_candidates by ID + subject_key fallback
     for cid in candidate_ids:
         await pool.execute("DELETE FROM memory_candidates WHERE candidate_id = $1::uuid", cid)
-
-    # Also clean any stray test rows by subject_key
     await pool.execute("DELETE FROM memory_candidates WHERE subject_key LIKE 'eval:m3a:%'")
-    await pool.execute("DELETE FROM memory_items WHERE source_candidate_id::text IN (SELECT candidate_id::text FROM memory_candidates WHERE subject_key LIKE 'eval:m3a:%')")
 
+    # 5. Verify all three tables
     rem_c = await pool.fetchval(
         "SELECT count(*) FROM memory_candidates WHERE subject_key LIKE 'eval:m3a:%'"
     )
