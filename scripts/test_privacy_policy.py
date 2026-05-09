@@ -40,7 +40,7 @@ def run():
     print("1. Actor → expected privacy levels:")
     check("local_bot",      ["public_like", "personal", "sensitive", "restricted"])
     check("api_client",     ["public_like", "personal", "sensitive", "restricted"])
-    check("telegram_bot",   ["public_like", "personal", "sensitive", "restricted"])
+    check("telegram_bot",   ["public_like", "personal", "sensitive"])
     check("claude_mcp",     ["public_like", "personal", "sensitive"])
     check("hermes_agent",   ["public_like", "personal"])
     check("dev_agent",      ["public_like", "personal"])

@@ -4711,7 +4711,7 @@ _PRIVACY_POLICY: dict[str, list[str]] = {
     # api_client currently maps to trusted local/private endpoint policy.
     # If future lower-trust clients use /v1/chat/completions, require
     # explicit X-Actor header or apply lower privilege.
-    "telegram_bot":   ["public_like", "personal", "sensitive", "restricted"],
+    "telegram_bot":   ["public_like", "personal", "sensitive"],
     "claude_mcp":     ["public_like", "personal", "sensitive"],
     "hermes_agent":   ["public_like", "personal"],
     "dev_agent":      ["public_like", "personal"],

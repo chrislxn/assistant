@@ -2246,12 +2246,13 @@ async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, 
             allowed_privacy = get_allowed_privacy_levels(actor)
             async with pool.acquire() as conn:
                 if excluded_levels:
-                    placeholders = ",".join(f"${i+4}" for i in range(len(excluded_levels)))
+                    limit_idx = 3 + len(excluded_levels)
+                    placeholders = ",".join(f"${i+3}" for i in range(len(excluded_levels)))
                     rows = await conn.fetch(
                         f"SELECT * FROM memories WHERE title = $1"
                         f" AND COALESCE(privacy_level, 'personal') = ANY($2::text[])"
                         f" AND (privacy_level IS NULL OR privacy_level NOT IN ({placeholders}))"
-                        f" ORDER BY created_at DESC LIMIT $3",
+                        f" ORDER BY created_at DESC LIMIT ${limit_idx}",
                         title, allowed_privacy, *excluded_levels, limit,
                     )
                 else:

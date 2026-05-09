@@ -51,8 +51,11 @@ HERMES_ACTOR = "hermes_agent"
 HERMES_TRUST = "assistant_inferred"
 EXCLUDE_PRIVACY = "sealed,restricted"
 # Phase 1.1: Hermes 的 actor gate 进一步排除 sensitive。
-# sealed 不会被任何 actor 返回；restricted 被 hermes_agent 排除。
-# EXCLUDE_PRIVACY 保留作为二级防线（与 SQL 层 actor gate 取交集）。
+# sealed 不会被任何 actor 返回；restricted 被 hermes_agent 的
+# actor privacy gate 排除（hermes_agent policy = public_like+personal）。
+# EXCLUDE_PRIVACY=sealed,restricted 保留作为二级防线（与 SQL 层 actor
+# gate 取交集）。注意：sensitive 的排除完全依赖 actor gate，不是
+# EXCLUDE_PRIVACY。修改 EXCLUDE_PRIVACY 时不要误以为它涵盖了 sensitive。
 HERMES_CORE_WHITELIST = {"response_policy", "active_projects"}
 
 # ============================================================
