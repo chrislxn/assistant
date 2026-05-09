@@ -1,7 +1,7 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.1-M2 Privacy Gate completed** — SQL-layer legacy memories retrieval 全量接入 actor privacy gate。
+**Phase 1.1-M3 Privacy Gate completed** — automated retrieval privacy gate test script delivered (109/109 PASS)。
 Phase 1.0 Memory Lifecycle closure completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
@@ -141,6 +141,25 @@ Memory Path 具体交付：
 - Retrieval privacy gate tests: 25/25 PASS
 - BLOCK-2 title+exclude 专项: 6/6 PASS
 
+### Phase 1.1-M3 — Automated Retrieval Privacy Gate Test
+
+- **新增 `scripts/test_privacy_gate_retrieval.py`**（447 行，stdlib only，无异步依赖）
+- 通过 kiwi-mem HTTP API 端到端验证 legacy retrieval privacy gate：
+  - `search_memories()` via `GET /debug/memories?q=`
+  - `get_recent_memories()` via `GET /debug/memories` (no q)
+  - `/debug/memories` title path via `GET /debug/memories?title=`
+  - sealed global exclusion（7 actors × 2 paths）
+  - actor privacy matrix（5 actors × 5 privacy levels × 3 paths）
+  - `exclude_privacy` blocklist intersection（2 cases × 3 paths）
+  - auto-cleanup with try/finally + fallback title search
+- Token via `ACCESS_TOKEN` env var（不硬编码）
+- **Bug fix**：`get_recent_memories` privacy/exclude 参数索引修复
+  - category_id 分支：privacy `$2` / exclude `$3`（offset by category_id=`$1`）
+  - non-category 分支：privacy `$1` / exclude `$2`（无 category_id 偏移）
+  - 与 Phase 1.1-M2 中 `_vector_search` 同类修复（BLOCK-1 衍生）
+- 测试结果：**109/109 PASS**（search 25 + recent 25 + title 25 + sealed 14 + exclude 15 + cleanup 5）
+- 测试数据残留确认：0
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -151,13 +170,13 @@ Phase 1.0 M3 验证：**15/15 review queue API tests + status guards + regressio
 Phase 1.0 M8 验证：**25/25 Hermes → Phase 1.0 lifecycle 端到端通过**
 Phase 1.1-M1 验证：**19/19 helper policy tests + regression 全通过**
 Phase 1.1-M2 验证：**25/25 retrieval gate + 6/6 title+exclude + 3/3 regression 全通过**
+Phase 1.1-M3 验证：**109/109 automated retrieval gate test + 3/3 regression 全通过**
 
 ## 下一阶段
-**Phase 1.1-M2 Privacy Gate — completed.**
-Phase 1.1-M3 推荐方向：
+**Phase 1.1 Privacy Gate — completed (M1/M2/M3).**
+Phase 1.1 follow-up / Phase 1.2 推荐方向：
 - minimal eval set（10-15 条，positive retrieval + negative leakage）
 - eval runner + seed data
-- `scripts/test_privacy_gate_retrieval.py` 自动化端到端测试（当前为手动验证）
 
 Phase 1.2（后续）：
 - memory_type cleanup（减少 legacy 比例）
@@ -195,6 +214,10 @@ Phase 1.2（后续）：
 - Hermes 的 sensitive 排除完全依赖 actor privacy gate（SQL 层）；EXCLUDE_PRIVACY=sealed,restricted 是二级 blocklist，不涵盖 sensitive
 - /debug/memories title + exclude_privacy 路径参数索引：$1=title, $2=allowed_privacy, $3..$N=excluded_levels, $limit_idx=limit
 - Phase 1.1-M2 不改 write path、resolver、core_blocks、health-db 只读配置
+- Phase 1.1-M3：`get_recent_memories` privacy/exclude 参数索引必须 per-branch（category_id 分支使用 `$2`/`$3`，non-category 分支使用 `$1`/`$2`），与 `_vector_search` 修复模式一致
+- Phase 1.1-M3：`ACCESS_TOKEN` 不硬编码在测试脚本中，通过 env var 传入
+- Phase 1.1-M3：测试 memory 创建使用 POST 返回的 `memory_id` 字段直接获取 ID（避免 sealed 等高级别记忆因隐私门控在 title lookup 中不可见）
+- Phase 1.1-M3：测试脚本 447 行，stdlib only（`urllib.request` + `json`），零外部依赖，可在任何 Python 3.x 环境运行
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
