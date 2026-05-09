@@ -5020,6 +5020,20 @@ def classify_candidate_review_policy(candidate: dict) -> dict:
 
     # Gate 5: short-term emotional / thought observations
     if memory_type in _SHORT_TERM_TYPES:
+        # High-importance short-term observations require review (B1 fix)
+        if importance >= 7:
+            return {
+                "recommended_action": "manual_review",
+                "reason": f"high-importance (importance={importance}) short-term observation requires review",
+                "memory_type": memory_type,
+                "review_required": True,
+                "should_commit_long_term": False,
+                "suggested_status": "requires_review",
+                "suggested_ttl_days": None,
+                "suggested_importance": importance,
+                "risk_level": "medium",
+            }
+
         durable_keywords = ("长期", "一直", "总是", "从来", "永远", "稳定地", "持续")
         looks_durable = any(kw in rendered_text for kw in durable_keywords)
 
@@ -5050,6 +5064,8 @@ def classify_candidate_review_policy(candidate: dict) -> dict:
 
     # Gate 6: medium factual → auto-commit eligible
     if memory_type in _MEDIUM_FACTUAL_TYPES:
+        _MEDIUM_FACTUAL_ALLOWED_SOURCES = {"user_direct", "user_confirmed", "system_generated"}
+
         if not source_event_ids:
             return {
                 "recommended_action": "auto_reject_or_expire",
@@ -5060,6 +5076,19 @@ def classify_candidate_review_policy(candidate: dict) -> dict:
                 "suggested_status": "rejected",
                 "suggested_ttl_days": None,
                 "suggested_importance": 0,
+                "risk_level": "medium",
+            }
+
+        if source_trust not in _MEDIUM_FACTUAL_ALLOWED_SOURCES:
+            return {
+                "recommended_action": "manual_review",
+                "reason": f"source_trust={source_trust} requires review before medium factual auto-commit",
+                "memory_type": memory_type,
+                "review_required": True,
+                "should_commit_long_term": False,
+                "suggested_status": "requires_review",
+                "suggested_ttl_days": None,
+                "suggested_importance": importance,
                 "risk_level": "medium",
             }
 

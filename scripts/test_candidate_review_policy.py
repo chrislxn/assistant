@@ -4,8 +4,12 @@ Extracts the classifier function and its dependency sets from database.py
 via regex (stdlib only — no asyncpg dependency on dev machine).
 """
 
+import os
 import re
 import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, "..", "kiwi-mem", "database.py")
 
 
 def extract_section(path: str, marker: str) -> str:
@@ -19,7 +23,7 @@ def extract_section(path: str, marker: str) -> str:
 
 
 def run():
-    code = extract_section("kiwi-mem/database.py",
+    code = extract_section(DB_PATH,
                            "# Phase 1.5 M2 — dry-run candidate review policy classifier")
     ns: dict = {}
     exec(code, ns)
@@ -146,6 +150,50 @@ def run():
     check("学不会",
           {"memory_type": "thought_observation", "rendered_text": "用户学不会数学", "source_trust": "assistant_inferred"},
           "auto_reject_or_expire", expected_review=False)
+    print("")
+
+    # ==================================================================
+    # B1: High-importance short-term → manual_review
+    # ==================================================================
+    print("5a. High-importance short-term observation → manual_review (B1 fix)")
+    check("high importance emotional_observation importance=7",
+          {"memory_type": "emotional_observation", "rendered_text": "这件事让我非常痛苦，无法释怀",
+           "source_trust": "user_direct", "source_event_ids": ["uuid-hi"], "importance": 7},
+          "manual_review", expected_review=True, expected_long_term=False)
+    check("high importance thought_observation importance=8",
+          {"memory_type": "thought_observation", "rendered_text": "我一直在思考人生的意义",
+           "source_trust": "user_direct", "source_event_ids": ["uuid-hi2"], "importance": 8},
+          "manual_review", expected_review=True, expected_long_term=False)
+    print("")
+
+    # ==================================================================
+    # B2: Source_trust gate for medium factual
+    # ==================================================================
+    print("5b. Source_trust gate for medium factual (B2 fix)")
+    check("assistant_inferred grade_fact → manual_review",
+          {"memory_type": "grade_fact", "rendered_text": "CSC165 midterm 85",
+           "source_trust": "assistant_inferred", "source_event_ids": ["uuid-s1"], "importance": 5},
+          "manual_review", expected_review=True)
+    check("third_party_doc grade_fact → manual_review",
+          {"memory_type": "grade_fact", "rendered_text": "MAT237 final 72",
+           "source_trust": "third_party_doc", "source_event_ids": ["uuid-s2"], "importance": 5},
+          "manual_review", expected_review=True)
+    check("user_direct grade_fact remains medium_factual_auto_commit",
+          {"memory_type": "grade_fact", "rendered_text": "STA237 68",
+           "source_trust": "user_direct", "source_event_ids": ["uuid-s3"], "importance": 5},
+          "medium_factual_auto_commit", expected_review=False, expected_long_term=True)
+    check("system_generated project_state → medium_factual_auto_commit",
+          {"memory_type": "project_state", "rendered_text": "n8n workflow deployed",
+           "source_trust": "system_generated", "source_event_ids": ["uuid-s4"], "importance": 5},
+          "medium_factual_auto_commit", expected_review=False)
+    check("unknown source_trust grade_fact → manual_review",
+          {"memory_type": "grade_fact", "rendered_text": "PHY131 90",
+           "source_trust": "unknown", "source_event_ids": ["uuid-s5"], "importance": 5},
+          "manual_review", expected_review=True)
+    check("user_confirmed academic_fact → medium_factual_auto_commit",
+          {"memory_type": "academic_fact", "rendered_text": "CSC236 completed with distinction",
+           "source_trust": "user_confirmed", "source_event_ids": ["uuid-s6"], "importance": 5},
+          "medium_factual_auto_commit", expected_review=False, expected_long_term=True)
     print("")
 
     # ==================================================================
