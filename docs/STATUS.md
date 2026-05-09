@@ -2,6 +2,7 @@
 
 ## 当前阶段
 **Phase 1.4 Memory Items Retrieval Bridge completed** — shadow retrieval helpers + comparison eval + philosophy docs delivered。
+Phase 1.5-M2 dry-run classifier completed (rule-based baseline, 23/23 PASS)。
 Phase 1.0/1.1/1.2/1.3/1.4 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
@@ -283,6 +284,19 @@ Phase 1.4-M2b 验证：**14/14 PASS, leak=0, mismatch=0, cleanup 5+5/0+0**
 - memory_events: benign append-only eval/test provenance records (non-removable, acceptable)
 - Production callers for new helpers: 0
 
+### Phase 1.5-M2 — Dry-Run Candidate Review Policy Classifier
+
+- `kiwi-mem/database.py`: 新增 `classify_candidate_review_policy(candidate: dict) -> dict`（pure function, zero side effects）
+- `scripts/test_candidate_review_policy.py`: 23/23 PASS（stdlib only）
+- 7-gate rule-based baseline：high-stakes → manual_review, diagnosis → manual_review, negative inference → auto_reject, third-party inference → auto_reject, short-term types → short_term_auto_write, medium factual → auto_commit, default → keep_pending
+- **Classifer is rule-based baseline only** — keyword/pattern matching, type gates, provenance gates
+- **Not a production semantic judge** — keyword matching is brittle for Chinese expressions; durable emotional claims, implicit negative inferences, and ordinary-feeling-vs-hard-fact distinctions require semantic judgment beyond current rules
+- **Zero resolver integration** — `resolve_candidate()` does not call this classifier; no candidate status changes; no auto_commit behavior changes
+- **AI-assisted semantic triage required before production enablement** — future M3/M4 must add AI triage for semantic classification, structured JSON output, and eval coverage before enabling any automatic write behavior
+- AI triage responsibilities: classify candidate type, estimate factuality/durability/usefulness/risk/recurrence/stability, produce structured recommendation with explanation
+- AI triage constraints: must NOT commit high-risk memory, update core_blocks, infer relationship status from ordinary feelings, infer ability/personality from grades, diagnose health/mental health, or bypass policy resolver
+- Final decision architecture: `hard rules + AI triage + policy resolver`
+
 ## 下一阶段
 **Phase 1.4 Memory Items Retrieval Bridge — completed (M1/M1.5/M2a/M2b).**
 
@@ -295,6 +309,7 @@ Important boundaries:
 - no migration from legacy `memories` to `memory_items`
 
 Phase 1.5+ candidates:
+- Phase 1.5-M2: dry-run classifier **completed**（see above）
 - Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred — see `docs/PHASE_1_5_REQUIREMENTS.md` for full requirements）
 - Phase 1.6: Provider Boundary & Local Model Routing（Provider Boundary Policy not implemented yet）
 - Future: `memory_items` primary retrieval switch planning, only after more shadow/eval confidence

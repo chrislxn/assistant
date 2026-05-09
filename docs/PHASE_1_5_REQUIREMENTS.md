@@ -252,13 +252,78 @@ These are deferred to M1 design — no implementation decisions are made here.
 
 | Phase | Content | Deliverable |
 |-------|---------|-------------|
-| **M1** | Design doc: classifier architecture, schema decisions, channel routing rules | `docs/PHASE_1_5_DESIGN.md` |
-| **M2** | Dry-run classifier: `classify_candidate_review_policy()` with logging only | `kiwi-mem/database.py` + test script |
-| **M3** | Short-term observation buffer: TTL support, write path for `short_term_auto_write` channel | Schema migration + `database.py` helpers |
-| **M4** | Medium factual auto-commit: enable `medium_factual_auto_commit` channel with provenance | Resolver integration |
+| **M1** | Design doc: classifier architecture, schema decisions, channel routing rules | `docs/PHASE_1_5_REQUIREMENTS.md` (this document) |
+| **M2** | Dry-run classifier: `classify_candidate_review_policy()` — **completed** (rule-based baseline, 23/23 PASS) | `kiwi-mem/database.py` + `scripts/test_candidate_review_policy.py` |
+| **M3** | Short-term observation buffer: TTL support, write path for `short_term_auto_write` channel — **must include AI-assisted triage design before enabling write behavior** | Schema migration + `database.py` helpers |
+| **M4** | Medium factual auto-commit: enable `medium_factual_auto_commit` channel with provenance — **must include AI-assisted triage eval before enabling auto-commit** | Resolver integration |
 | **M5** | Digest job: weekly aggregation prototype, Layer 2 → Layer 3 promotion | Background job + digest candidate generation |
 
-M2-M5 are sequential dependencies. M1 is the prerequisite for all subsequent work.
+M3-M5 are sequential dependencies. M2 is completed as a dry-run baseline. M3/M4 must not enable automatic write behavior without AI-assisted semantic triage (see §10.1).
+
+### 10.1 M2 Classifier Limitations
+
+The M2 `classify_candidate_review_policy()` is a **rule-based baseline** only. It uses type gates, source_trust gates, provenance gates, and simple keyword/pattern matching. It is suitable for validating the policy skeleton and testing gate ordering. It is **not a production-grade semantic classifier**.
+
+**Current limitations**:
+- Keyword/pattern matching is brittle, especially for Chinese emotional expressions.
+- Durable emotional claims ("长期自我否定") cannot be reliably detected by fixed keywords alone.
+- Negative inference patterns ("学习能力差", "学不会") may miss implicit or indirect wording.
+- The distinction between ordinary feelings and hard relationship facts requires semantic judgment beyond current rules.
+- Academic facts vs. ability/personality attribution require semantic judgment beyond current rules.
+- `third_party_doc` handling is gated on `source_trust` but the field value depends on upstream extraction accuracy.
+
+**Production enablement constraint**: Before any automatic write behavior is enabled (M3 observation_only, M4 medium_factual_auto_commit), Phase 1.5 must add and evaluate an **AI-assisted semantic triage layer**. The rule-based classifier alone is insufficient for production promotion decisions.
+
+### 10.2 Future AI-Assisted Triage Requirements
+
+**AI triage responsibilities**:
+- Classify whether a candidate is: ordinary feeling, durable inference, factual note, relationship fact, academic fact, negative capability inference, or high-risk claim.
+- Estimate: factuality, durability, usefulness, risk, recurrence, privacy_level, and stability.
+- Produce a structured JSON recommendation with `recommended_action`, `risk_level`, `unsafe_inference_detected`, and human-readable `reason`.
+- Explain *why* a candidate should be `short_term_auto_write` / `medium_factual_auto_commit` / `manual_review` / `auto_reject_or_expire` / `keep_pending`.
+
+**AI triage constraints** (hard rules that AI cannot override):
+- Must NOT commit high-risk memory.
+- Must NOT update core_blocks.
+- Must NOT decide final truth about the user.
+- Must NOT infer relationship status from ordinary emotional expressions.
+- Must NOT infer ability/personality from grades or academic stress.
+- Must NOT diagnose health or mental health conditions.
+- Must NOT bypass the policy resolver.
+
+**Future AI triage prompt principles**:
+- Do not convert temporary feelings into durable identity facts.
+- Do not infer relationship status from ordinary emotional expressions.
+- Do not infer ability/personality from grades or academic stress.
+- Do not diagnose health or mental health.
+- Do not auto-commit high-risk facts.
+- Return JSON only.
+
+**Future AI triage output schema** (proposed):
+```
+recommended_action, memory_type, factuality, durability, usefulness,
+risk_level, privacy_level, suggested_ttl_days, should_commit_long_term,
+review_required, unsafe_inference_detected, reason
+```
+
+**Future eval examples**:
+- "我想她了" → short_term_auto_write
+- "我现在很难受" → short_term_auto_write
+- "这件事让我自我否定" → short_term_auto_write / emotional_observation
+- "用户长期因为 Ellie 自我否定" → manual_review
+- "CSC165 51，STA237 68" → medium_factual_auto_commit
+- "用户学习能力差" → auto_reject_or_expire
+- "用户被诊断为焦虑症" → manual_review
+- third_party_doc infers preference → auto_reject_or_expire
+
+### 10.3 Policy Architecture
+
+Final decision architecture: **hard rules + AI triage + policy resolver**
+
+- **Hard rules** (type gates, source_trust gates, provenance gates): enforce non-negotiable safety boundaries.
+- **AI triage**: provides semantic classification and confidence estimation.
+- **Policy resolver** (`classify_candidate_review_policy()` evolved): makes the final action decision by combining rules with AI triage output.
+- **User review**: reserved for high-risk or ambiguous durable memory only.
 
 ---
 
