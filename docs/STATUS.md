@@ -1,8 +1,8 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.4 Memory Items Retrieval Bridge completed** — shadow retrieval helpers + comparison eval + philosophy docs delivered。
-Phase 1.5-M2 dry-run classifier completed (31/31 PASS), Phase 1.5-M3a observation-only admin support completed (24/24 PASS)。
+**Phase 1.5 in progress — M2 classifier + M3a admin support completed**（31/31 + 24/24 PASS）。
+Phase 1.5-M3b (resolver: short_term_auto_write → observation_only) is next。
 Phase 1.0/1.1/1.2/1.3/1.4 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
@@ -380,6 +380,101 @@ Phase 1.5+ candidates:
 > tag: phase-1.2-retrieval-cleanup
 > tag: phase-1.3-minimal-eval
 > tag: phase-1.4-memory-items-bridge
+
+---
+
+## Phase 1.5-M3a Hard Boundaries
+
+M3a does NOT:
+- call `classify_candidate_review_policy()` from `resolve_candidate()`
+- enable `short_term_auto_write` write behavior
+- create `observation_only` candidates automatically
+- write `observation_only` into `memory_items`
+- write `observation_only` into legacy `memories`
+- expose `observation_only` to retrieval
+- expose `observation_only` to Hermes / Telegram / chat completions
+- implement expiry script (M3c)
+- implement digest job (M5)
+- enable `medium_factual_auto_commit` (M4)
+- enable `auto_reject_or_expire` (deferred)
+
+## 验证结果（2026-05-09 end-of-day）
+
+| Test | Result |
+|------|--------|
+| `py_compile database.py` | OK |
+| `py_compile main.py` | OK |
+| `test_candidate_review_policy.py` | 31/31 PASS |
+| `test_observation_m3a.py` | 24/24 PASS |
+| `test_privacy_policy.py` | 19/19 PASS |
+| `test_privacy_gate_retrieval.py` | 124/124 PASS |
+| `eval_retrieval_minimal.py` | 10/10 PASS |
+| `eval_memory_items_shadow.py` | 14/14 PASS |
+
+## Immediate Next Step: Phase 1.5-M3b
+
+Phase 1.5-M3b planned — enable only `short_term_auto_write` → `observation_only` + `valid_to`:
+- Use `classify_candidate_review_policy()` only for this single channel
+- Set `valid_to` using `suggested_ttl_days`
+- Do NOT write `memory_items`
+- Do NOT write legacy `memories`
+- Do NOT enable `medium_factual_auto_commit`
+- Do NOT enable `auto_reject_or_expire`
+- Do NOT implement digest
+- Do NOT implement retrieval
+- Do NOT implement expiry script
+
+## Future Phase Candidates
+
+**Phase 1.5-M3c** — expiry script:
+- `scripts/expire_observations.py`
+- `observation_only` + `valid_to < NOW()` → `status='expired'`
+- Preserve provenance (no deletion)
+
+**Phase 1.5-M4** — medium factual auto-commit:
+- Only after more review and tests
+- `source_trust`/provenance-gated
+- No high-risk facts
+
+**Phase 1.5-M5** — digest planning/prototype:
+- Weekly `observation_only` → digest candidate
+- Batch review, no direct commit
+
+**Future AI-assisted triage**:
+- Rule-based classifier is baseline only
+- Production enablement needs AI semantic triage + eval coverage
+- AI triage suggests；policy resolver decides
+
+**Future Provider Boundary / Local Model Routing**:
+- Cloud provider exposure documented (KNOWN_RISKS.md Risk 9)
+- `sealed`/`restricted` local-only policy
+- Local model routing before sending sensitive content to third-party LLM/embedding providers
+
+## Future Codebase Cleanup Debt
+
+`kiwi-mem/database.py` (~5000 lines) and `kiwi-mem/main.py` (~3100 lines) should eventually be split into focused modules. This is a no-behavior-change refactor — do NOT perform inside Phase 1.5 functional milestones.
+
+**database.py proposed split**:
+- `schema/` — migrations, init_tables
+- `candidate_store.py` — memory_candidates CRUD
+- `memory_item_store.py` — memory_items CRUD + retrieval
+- `legacy_memory_store.py` — memories CRUD + retrieval
+- `privacy_policy.py` — `get_allowed_privacy_levels()`, `_PRIVACY_POLICY`
+- `candidate_policy.py` — `classify_candidate_review_policy()`
+- `access_log.py` — `log_memory_access()`
+
+**main.py proposed route split**:
+- `routes/admin_candidates.py`
+- `routes/core_blocks.py`
+- `routes/debug_memory.py`
+- `routes/chat.py`
+- `routes/health.py`
+- `routes/hermes.py`
+- `app_startup.py`
+
+## Tag Status
+
+No new tag yet — Phase 1.5 is in progress (M1/M2/M3a done; M3b/M3c/M4/M5 pending).
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
