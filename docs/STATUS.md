@@ -295,24 +295,9 @@ Important boundaries:
 - no migration from legacy `memories` to `memory_items`
 
 Phase 1.5+ candidates:
-- Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred, see below）
+- Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred — see `docs/PHASE_1_5_REQUIREMENTS.md` for full requirements）
 - Phase 1.6: Provider Boundary & Local Model Routing（Provider Boundary Policy not implemented yet）
 - Future: `memory_items` primary retrieval switch planning, only after more shadow/eval confidence
-
-### Future Candidate: Phase 1.5 Candidate Review Policy & Short-Term Observation Layer
-
-**Status**: deferred — do not implement. Phase 1.4 retrieval bridge is now sealed. Revisit in Phase 1.5.
-
-**Motivation**: Current candidate review can become too burdensome if ordinary feelings, complaints, short-term thoughts, and low-risk factual notes all enter manual review.
-
-**Principle**:
-- Ordinary feelings / complaints / short-term thoughts should default to **short-term observation**, not manual review.
-- Short-term observations may be retained for 7–14 days and later compressed into low-weight long-term digests.
-- Medium-risk factual information (grades, course status, project facts, technical environment) can be **auto-committed** with provenance and moderate importance.
-  - Note: "grades" may qualify as `sensitive` in some contexts. Privacy_level mapping for this category should be reviewed during Phase 1.5 design, not assumed.
-- Manual review should be **reserved for high-risk durable facts**: `identity_fact`, hard relationship facts, `health_baseline`, `risk_flag`, `policy_rule`, financial/legal sensitive facts, `core_blocks` updates, and long-term personality/relationship/health inferences.
-
-**Do not implement now.** Do not change resolver, schema, or candidate API. This is deferred until after Phase 1.4 retrieval bridge / bottom-layer safety work is sealed.
 
 ---
 
