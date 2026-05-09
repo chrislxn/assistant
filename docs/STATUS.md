@@ -1,12 +1,12 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.4 Memory Items Retrieval Bridge in progress (M1/M2a/M1.5 completed)** — shadow helpers ready, philosophy docs added, M2b pending。
-Phase 1.0/1.1/1.2/1.3 completed / sealed；Hermes conservative integration completed。
+**Phase 1.4 Memory Items Retrieval Bridge completed** — shadow retrieval helpers + comparison eval + philosophy docs delivered。
+Phase 1.0/1.1/1.2/1.3/1.4 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
-- **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，但尚未接入 retrieval
-- memory_items (UUID) 作为新 committed memory 层，memories 兼容双写
+- **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，retrieval helpers 已存在但仅用于 shadow/eval，未接入生产检索
+- memory_items (UUID) 作为新 committed memory 层，memories 兼容双写；Phase 1.4 已实现 shadow retrieval + comparison eval（14/14 PASS, mismatch=0）
 - resolve_candidate() 实现 auto-commit / keep_pending / requires_review 三条路径
 - review queue API 4 端点可用（list / detail / commit / reject）
 - 所有新写入均带 source_trust / source_event_ids / privacy_level / memory_type
@@ -227,6 +227,19 @@ Memory Path 具体交付：
 - Return dict aligned to legacy format: `memory_id`, `id` (alias), `content` (mapped from `rendered_text`), `privacy_level`, `memory_type`, `subject_key`, `predicate_key`, `confidence`, `importance`, `created_at`, `source_candidate_id`
 - **Zero production callers** — not wired to any endpoint or consumer
 
+### Phase 1.4-M2b — Shadow Comparison Eval
+
+- 新增 `scripts/eval_memory_items_shadow.py`（360 lines, stdlib + asyncpg）
+- Direct paired INSERT into `memories` + `memory_items`（不经过 candidates/events/resolver/admin API）
+- 比较 legacy retrieval 与 memory_items retrieval 的 privacy behavior
+- 6 actors × search + 6 actors × recent + 2 exclude = **14 cases**
+- 结果：**14/14 PASS**
+  - `legacy_leak_count`: 0
+  - `items_leak_count`: 0
+  - `mismatch_count`: 0
+- Cleanup: legacy 5 deleted / 0 remaining, items 5 deleted / 0 remaining
+- Fallback cleanup by `subject_key LIKE 'eval:shadow:%'` + source/source_trust
+
 ### Phase 1.4-M1.5 — Documentation & Philosophy Layer
 
 - 新增 `docs/VISION.md` — 长期愿景与设计哲学
@@ -265,21 +278,30 @@ Phase 1.3-M1 验证：**10 cases defined, all fields valid**
 Phase 1.3-M2 验证：**10/10 PASS, leak_count=0, missing_expected_count=0**
 Phase 1.4-M1 验证：**design doc reviewed, strategy B selected**
 Phase 1.4-M2a 验证：**py_compile OK, 19/19 + 124/124 + 10/10 all PASS, legacy unchanged**
-- cleanup: deleted=5, remaining=0
+Phase 1.4-M2b 验证：**14/14 PASS, leak=0, mismatch=0, cleanup 5+5/0+0**
 - Test data residue: memories 0 / memory_candidates 0 / memory_items 0
 - memory_events: benign append-only eval/test provenance records (non-removable, acceptable)
 - Production callers for new helpers: 0
 
 ## 下一阶段
-**Phase 1.4 Memory Items Retrieval Bridge — in progress (M1/M2a/M1.5 done).**
+**Phase 1.4 Memory Items Retrieval Bridge — completed (M1/M1.5/M2a/M2b).**
 
-Next: **Phase 1.4-M2b — shadow comparison script**
-- `scripts/eval_memory_items_shadow.py`: compare legacy vs memory_items retrieval privacy behavior
-- No production switch, no endpoint changes, no Hermes/Telegram changes
+Important boundaries:
+- legacy `memories` is still primary retrieval source
+- `memory_items` read path exists only for shadow/eval
+- no production endpoint uses `memory_items` retrieval
+- no Hermes / Telegram / chat completions integration
+- no `memory_items`-only switch
+- no migration from legacy `memories` to `memory_items`
+
+Phase 1.5+ candidates:
+- Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred, see below）
+- Phase 1.6: Provider Boundary & Local Model Routing（Provider Boundary Policy not implemented yet）
+- Future: `memory_items` primary retrieval switch planning, only after more shadow/eval confidence
 
 ### Future Candidate: Phase 1.5 Candidate Review Policy & Short-Term Observation Layer
 
-**Status**: deferred — do not implement. Revisit after Phase 1.4 retrieval bridge is sealed.
+**Status**: deferred — do not implement. Phase 1.4 retrieval bridge is now sealed. Revisit in Phase 1.5.
 
 **Motivation**: Current candidate review can become too burdensome if ordinary feelings, complaints, short-term thoughts, and low-risk factual notes all enter manual review.
 
@@ -339,10 +361,13 @@ Next: **Phase 1.4-M2b — shadow comparison script**
 - Phase 1.4-M1：Strategy B (dual-read shadow mode) selected — `memories` primary, `memory_items` shadow/eval only, no switch
 - Phase 1.4-M2a：`search_memory_items()` / `get_recent_memory_items()` zero production callers；keyword-only (no embedding)；return dict aligned to legacy format
 - Phase 1.4-M2a：privacy gate identical to Phase 1.1 — same `_PRIVACY_POLICY`, same `COALESCE`, same `!= ALL` for exclude, same sealed exclusion
-- Phase 1.4-M1.5：VISION.md 确立 7-layer memory hierarchy，明确 emotional states ≠ identity；KNOWN_RISKS.md 记录 8 类长期风险及当前 mitigation gap；ARCHITECTURE.md §1.1 引用哲学文档
+- Phase 1.4-M1.5：VISION.md 确立 7-layer memory hierarchy，明确 emotional states ≠ identity；KNOWN_RISKS.md 记录 9 类长期风险（含 provider exposure）及当前 mitigation gap；ARCHITECTURE.md §1.1 引用哲学文档
+- Phase 1.4-M2b：shadow comparison 验证 legacy 与 memory_items retrieval privacy behavior 完全一致（14/14, mismatch=0, leak=0）
+- Phase 1.4：`memory_items` 检索路径已存在但仅为 shadow/eval；legacy `memories` 仍是唯一 primary retrieval source；无生产切换
 
 > tag: phase-1.2-retrieval-cleanup
 > tag: phase-1.3-minimal-eval
+> tag: phase-1.4-memory-items-bridge
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
