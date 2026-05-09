@@ -844,11 +844,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         # ===== v2.4 改进：组合式获取已有记忆 =====
         # 用当前对话内容搜索相关记忆（能覆盖到种子记忆）
         # track_recall=False: 这里是去重对比，不是用户聊天，不应该增加召回计数
-        related = await search_memories(user_msg, limit=50, track_recall=False, project_id=project_id)
+        related = await search_memories(user_msg, limit=50, track_recall=False, project_id=project_id, actor="local_bot")
         related_contents = [r["content"] for r in related]
         
         # 再补充最近的记忆（防止遗漏新存的）
-        recent = await get_recent_memories(limit=30, project_id=project_id)
+        recent = await get_recent_memories(limit=30, project_id=project_id, actor="local_bot")
         recent_contents = [r["content"] for r in recent]
         
         # 合并去重
@@ -3042,8 +3042,8 @@ async def api_extract_now(request: Request):
         
         # 获取对比用的已有记忆
         user_text = " ".join(r["content"] for r in recent_msgs if r["role"] == "user")
-        related = await search_memories(user_text[:500], limit=50, track_recall=False, project_id=project_id)
-        recent = await get_recent_memories(limit=30)
+        related = await search_memories(user_text[:500], limit=50, track_recall=False, project_id=project_id, actor="local_bot")
+        recent = await get_recent_memories(limit=30, actor="local_bot")
         seen = set()
         existing_contents = []
         for content in [r["content"] for r in related] + [r["content"] for r in recent]:

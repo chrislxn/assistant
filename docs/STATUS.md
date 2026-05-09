@@ -5,12 +5,14 @@
 Phase 1.0 Memory Lifecycle closure completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
+- **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，但尚未接入 retrieval
 - memory_items (UUID) 作为新 committed memory 层，memories 兼容双写
 - resolve_candidate() 实现 auto-commit / keep_pending / requires_review 三条路径
 - review queue API 4 端点可用（list / detail / commit / reject）
 - 所有新写入均带 source_trust / source_event_ids / privacy_level / memory_type
 - core memory 已从 memories 表独立为版本化 core_blocks
 - 读写路径均有 access log；外部 agent 写入不绕过 provenance 规则
+- Phase 1.1: legacy retrieval 已有 SQL-layer actor privacy gate；所有 internal read path 显式传 actor="local_bot"
 
 ## 已完成模块
 
@@ -218,6 +220,8 @@ Phase 1.2（后续）：
 - Phase 1.1-M3：`ACCESS_TOKEN` 不硬编码在测试脚本中，通过 env var 传入
 - Phase 1.1-M3：测试 memory 创建使用 POST 返回的 `memory_id` 字段直接获取 ID（避免 sealed 等高级别记忆因隐私门控在 title lookup 中不可见）
 - Phase 1.1-M3：测试脚本 447 行，stdlib only（`urllib.request` + `json`），零外部依赖，可在任何 Python 3.x 环境运行
+- Phase 1.2-M3：所有 internal memory read path 显式传 `actor="local_bot"`（5 处：database.py check_memory_duplicate + main.py AI 提取 ×2 路径 search/recent）
+- Phase 1.2-M3：`get_recent_memories` 四分支（category_id × exclude_privacy）暂不重构 — 124/124 regression 已覆盖，避免引入新的参数索引风险（deferred）
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md

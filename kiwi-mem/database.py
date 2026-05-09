@@ -2083,7 +2083,7 @@ async def check_memory_duplicate(new_content: str, threshold: float = None, new_
     
     # 第2层 + 第3层：先用向量搜索找候选，再做精确对比
     try:
-        similar = await search_memories(new_content, limit=15, track_recall=False)
+        similar = await search_memories(new_content, limit=15, track_recall=False, actor="local_bot")
     except Exception:
         return False, []
     
