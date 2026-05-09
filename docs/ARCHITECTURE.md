@@ -1,15 +1,15 @@
 # Architecture
 
-> 对应版本：Phase 0.5（completed / sealed）
-> 日期：2026-05-08
+> 对应版本：Phase 1.1（retrieval safety completed）
+> 日期：2026-05-09
 
-本文档描述当前系统的实际架构，不写未来计划。Phase 1+ 的演进方向见 `PHASE_0_5_SUMMARY.md` 第 7 节。
+本文档描述当前系统的实际架构，不写未来计划。Phase 1.2+ 的演进方向见 `PHASE_1_PLAN.md`。
 
 ---
 
-## 1. Current Architecture: Phase 0.5
+## 1. Current Architecture: Phase 1.1
 
-当前系统由四层组成：
+当前系统由五层组成：
 
 ```
 legacy kiwi-mem（FastAPI + PostgreSQL + pgvector）
@@ -17,7 +17,10 @@ legacy kiwi-mem（FastAPI + PostgreSQL + pgvector）
   + candidate shadow layer（memory_candidates）
   + versioned core_blocks（core_blocks）
   + access audit layer（memory_access_log）
+  + actor privacy gate（Phase 1.1 — retrieval safety）
 ```
+
+Server topology and Hermes dual-path模型保持不变（见 §4）。
 
 **服务拓扑：**
 
@@ -237,10 +240,13 @@ Hermes turn
             hermes_get_context
               → 加载 core_blocks → 白名单过滤: response_policy + active_projects
               → 排除: test.block / health_baseline / relationship_context
-              → 搜索 memory (排除 sealed/restricted)
-              → 获取 recent (排除 sealed/restricted)
+              → 搜索 memory (actor gate = hermes_agent: public_like+personal)
+              → 获取 recent (actor gate = hermes_agent: public_like+personal)
+              → EXCLUDE_PRIVACY=sealed,restricted 为二级 blocklist
             hermes_search / hermes_get_recent
-              → 读 memories, 排除 sealed/restricted
+              → 读 memories, actor gate = hermes_agent
+              → 只允许 public_like + personal（SQL 层 actor privacy gate）
+              → sensitive/restricted/sealed 全部被拦截
             hermes_observe / hermes_propose_memory
               → POST /events (append-only event)
               → POST /candidates (status=pending, source_trust=assistant_inferred)
@@ -252,7 +258,82 @@ Hermes turn
 - Hermes 不能通过 health-db MCP 读取 `memories`、`core_blocks` 等表（已被 REVOKE）
 - Hermes 不能通过 hermes_mcp.py 读取 `health_summary`、`raw_health_data`（不在此路径的 API 范围内）
 - `health_baseline` 和 `relationship_context` 不在 Hermes default context whitelist 中，不注入
+- Hermes Memory path 的 `sensitive` 排除完全依赖 actor privacy gate（`hermes_agent` policy = `public_like`+`personal`）；`EXCLUDE_PRIVACY="sealed,restricted"` 是二级 blocklist，不涵盖 `sensitive`
 - 未来如需健康上下文注入 Memory path，应新增 `hermes_get_health_context` 或显式 health intent，**不应**扩展 default Hermes context whitelist
+
+### 4.1 Phase 1.1 — Actor Privacy Gate (Retrieval Safety)
+
+所有 legacy memories 检索路径在 SQL 层按 actor 过滤 `privacy_level`。
+
+**Actor Privacy Matrix：**
+
+| actor | public_like | personal | sensitive | restricted | sealed |
+|-------|:---:|:---:|:---:|:---:|:---:|
+| local_bot | ✅ | ✅ | ✅ | ✅ | ❌ |
+| api_client | ✅ | ✅ | ✅ | ✅ | ❌ |
+| telegram_bot | ✅ | ✅ | ✅ | ❌ | ❌ |
+| claude_mcp | ✅ | ✅ | ✅ | ❌ | ❌ |
+| hermes_agent | ✅ | ✅ | ❌ | ❌ | ❌ |
+| dev_agent | ✅ | ✅ | ❌ | ❌ | ❌ |
+| unknown / default | ✅ | ✅ | ❌ | ❌ | ❌ |
+
+- `sealed` 永远不通过普通 retrieval 自动返回
+- `api_client` 当前映射 trusted local/private endpoint；未来 external clients 需显式 `X-Actor` 或降权
+- 实现：`get_allowed_privacy_levels(actor)` → `_PRIVACY_POLICY` dict（`database.py`）
+- Phase 1.1 不做 `actor_scope` 数组过滤
+
+**SQL-layer Gate：**
+
+```
+effective_visible = get_allowed_privacy_levels(actor) − exclude_privacy
+```
+
+所有 retrieval 路径使用 bind-parameter 安全写法：
+
+```sql
+COALESCE(m.privacy_level, 'personal') = ANY($N::text[])
+-- + optional:
+AND COALESCE(m.privacy_level, 'personal') != ALL($M::text[])
+```
+
+- `exclude_privacy` 是减法 blocklist，`actor` gate 是 allowlist；两者取交集
+- 旧数据 `privacy_level = NULL` → `COALESCE(…, 'personal')`
+- 不做 Python post-filter（SQL 层过滤）
+
+**Covered retrieval paths：**
+
+| 函数 | 所在文件 | actor 参数 |
+|------|---------|-----------|
+| `search_memories()` | database.py | `actor="local_bot"` (default) |
+| `_vector_search()` | database.py | via `allowed_privacy` list |
+| `_keyword_search()` | database.py | via `allowed_privacy` list |
+| `get_recent_memories()` | database.py | `actor="local_bot"` (default) |
+| `/debug/memories` (含 title path) | main.py | `actor=` query param, 默认 `"local_bot"` |
+
+**Actor 调用方传参：**
+
+| 入口 | actor | 路径 |
+|------|-------|------|
+| `/v1/chat/completions` | `"api_client"` | `build_system_prompt_with_memories()` |
+| Telegram bot (`search_memory`, `get_persona`) | `"telegram_bot"` | `GET /debug/memories` |
+| Hermes MCP (`hermes_search`, `hermes_get_recent`, `hermes_get_context`) | `"hermes_agent"` | `GET /debug/memories` |
+| AI extraction / dedup (内部) | `"local_bot"` (默认) | 直调 DB helpers |
+
+**Hermes 双路径中的 Privacy Gate：**
+
+- **Health path**（health-db MCP, hermes_readonly）：不变，仍只读 `health_summary` + `raw_health_data`
+- **Memory path**（hermes_mcp.py）：`hermes_agent` actor gate → 只允许 `public_like` + `personal`
+  - `sensitive` / `restricted` / `sealed` 三者均被 actor gate 拦截
+  - `sensitive` 的排除**完全依赖 actor gate**（不是 `EXCLUDE_PRIVACY`）
+  - `EXCLUDE_PRIVACY="sealed,restricted"` 保留为二级防线（与 actor gate 取交集）
+  - 未来如需健康上下文注入 Memory path，应新增 `hermes_get_health_context` 或显式 health intent
+
+**Verification：**
+
+| 脚本 | 覆盖 | 结果 |
+|------|------|------|
+| `scripts/test_privacy_policy.py` | helper unit tests | 19/19 PASS |
+| `scripts/test_privacy_gate_retrieval.py` | end-to-end retrieval gate | 109/109 PASS |
 
 ---
 
@@ -275,42 +356,56 @@ Hermes turn
 
 ## 6. Agent Entry Rules
 
-| Agent | 写入方式 | 可写 memories | 可写 candidates | 可写 core_blocks | 读取路径 |
-|-------|---------|:---:|:---:|:---:|---------|
-| Manual user (via API) | `POST /debug/memories` | ✅ user_direct | — | — | HTTP API |
-| Health pipeline | `POST /data/health` | ✅ system_generated | — | — | HTTP API |
-| AI extraction (internal) | background task | ✅ assistant_inferred | ✅ pending | — | 直连 DB |
-| MCP (Claude.ai) | `POST /debug/memories` via mcp_server | ✅ assistant_inferred | — | ❌ | memory MCP |
-| Telegram Bot | `POST /debug/memories` via HTTP | ✅ user_direct | — | ❌ | HTTP API |
-| **Hermes Agent** | `POST /events` + `POST /candidates` via hermes_mcp | ❌ | ✅ pending only | ❌ | **双路径**: health-db MCP (健康) + hermes_mcp (记忆) |
+| Agent | 写入方式 | 可写 memories | 可写 candidates | 可写 core_blocks | 读取路径 | actor gate (retrieval) |
+|-------|---------|:---:|:---:|:---:|---------|------------------------|
+| Manual user (via API) | `POST /debug/memories` | ✅ user_direct | — | — | HTTP API | local_bot (admin) |
+| Health pipeline | `POST /data/health` | ✅ system_generated | — | — | HTTP API | local_bot (internal) |
+| AI extraction (internal) | background task | ✅ assistant_inferred | ✅ pending | — | 直连 DB | local_bot (internal) |
+| MCP (Claude.ai) | `POST /debug/memories` via mcp_server | ✅ assistant_inferred | — | ❌ | memory MCP | claude_mcp |
+| Telegram Bot | `POST /debug/memories` via HTTP | ✅ user_direct | — | ❌ | HTTP API | telegram_bot |
+| **Hermes Agent** | `POST /events` + `POST /candidates` via hermes_mcp | ❌ | ✅ pending only | ❌ | **双路径**: health-db MCP (健康) + hermes_mcp (记忆) | hermes_agent |
 
 **当前规则：**
 - 外部 agent 写入均为 `assistant_inferred`，应保持 candidate-only（Phase 1 resolver 接管前暂时落到 memories 表，带 provenance）
 - 外部 agent 不允许直接写 `core_blocks`
 - 不允许 MCP 或外部 agent 调用数据库直写
+- **Actor privacy gate（Phase 1.1）**：所有 legacy memories retrieval 在 SQL 层按 actor 过滤 privacy_level（见 §4.1 actor privacy matrix）
 - **Hermes Agent 特殊规则：**
   - 不直接写 memories，只通过 `POST /events` (append-only) + `POST /candidates` (pending)
   - health-db MCP 专用于健康数据读取，与 memory context 完全分离
   - 不注入 `health_baseline` 或 `relationship_context` 到 default context
+  - Memory path 受 hermes_agent actor gate → 只读 public_like + personal
 
 ---
 
 ## 7. Future Architecture Direction
 
-Phase 1 将逐步引入（**当前未实现**）：
+Phase 1.0 已交付（**当前已实现**）：
 
 ```
-memory_items (UUID, new committed layer)
-  ← candidate resolver (pending → committed / rejected)
-  ← privacy-gated retrieval (privacy_level + actor_scope filter)
-  ← policy rules engine
-  ← review queue
-  ← minimal eval set
+memory_items (UUID, new committed layer)          ← Phase 1.0 M1
+candidate resolver (pending → committed / rejected) ← Phase 1.0 M2
+review queue API                                   ← Phase 1.0 M3
 ```
+
+Phase 1.1 已交付（**当前已实现**）：
+
+```
+actor privacy gate (SQL-layer, privacy_level filter) ← Phase 1.1 M1/M2
+retrieval gate automated test script                  ← Phase 1.1 M3
+```
+
+**Phase 1.2+ 推荐方向（未实现）：**
+
+- `actor_scope` 数组过滤（当前 Phase 1.1 只做 privacy_level）
+- minimal eval set（10-15 条，positive retrieval + negative leakage）
+- eval runner + seed data
+- memory_type cleanup（减少 legacy 比例）
+- basic policy rules 抽离
+- privacy-gated retrieval for `memory_items` primary retrieval（当前仅 legacy memories）
 
 **未来可选增强（不在 Phase 1 必须范围内）：**
-- FTS + vector + structured hybrid search with RRF fusion
-- Reranker
+- FTS + vector + structured hybrid search with RRF reranker
 - Graph-based conflict resolution (AGM)
 - SpiceDB / ReBAC for fine-grained access control
 - WeChat historical import pipeline
