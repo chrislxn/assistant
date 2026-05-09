@@ -1,8 +1,8 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.2 Retrieval Cleanup & Boundary Alignment completed** — test coverage 124/124, all internal paths explicit actor。
-Phase 1.0/1.1 completed / sealed；Hermes conservative integration completed。
+**Phase 1.3 Minimal Evaluation Harness completed** — 10/10 eval cases, query-based retrieval harness。
+Phase 1.0/1.1/1.2 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
 - **Primary retrieval source**: legacy `memories` 表；`memory_items` 是 committed memory 主表 / lifecycle target，但尚未接入 retrieval
@@ -185,6 +185,24 @@ Memory Path 具体交付：
 - Legacy `memories` 表仍是 primary retrieval source；`memory_items` 是 committed memory lifecycle target，尚未接入 retrieval
 - 所有 internal read path 现在显式标注 actor boundary
 
+### Phase 1.3-M1 — Eval Case Definitions
+
+- 新增 `evals/retrieval_safety_minimal.jsonl`（10 cases, JSONL）
+- Query-template format with placeholder expansion: `{anchor}` / `{<level>_tag}`
+- 覆盖 5 actors × anchor query + 2 exclude_privacy intersection + 2 tag-specific + 1 sealed global
+- All expected_visible / expected_hidden use real privacy level names
+
+### Phase 1.3-M2 — Eval Runner
+
+- 新增 `scripts/eval_retrieval_minimal.py`（303 lines, stdlib only）
+- Standalone runner: reads JSONL, creates anchored test memories, runs query-based retrieval, outputs JSON summary
+- Shared `kiwi_eval_alpha_<timestamp>` anchor across all 5 test memories
+- Template expansion: `{anchor}` → shared anchor, `{<level>_tag}` → per-level tag
+- Level tag matching via embedded `tag:<level_tag>` in content
+- try/finally cleanup with fallback title search + residue verification
+- Machine-readable JSON summary: total / passed / failed / leak_count / missing_expected_count / cases / cleanup_deleted / cleanup_remaining
+- Exit 0 on all pass, exit 1 on any failure
+
 ## 最终验证
 Phase 0.5 回归验证：**10/10 全通过**
 Hermes integration 验证：**6/6 全通过**（events / candidates / health / access_log / core_blocks / privacy filter）
@@ -199,19 +217,20 @@ Phase 1.1-M3 验证：**109/109 automated retrieval gate test + 3/3 regression �
 Phase 1.2-M1 验证：**109/109 regression unchanged after cleanup**
 Phase 1.2-M2 验证：**124/124 local_bot +15 coverage**
 Phase 1.2-M3 验证：**124/124 + 19/19, no SQL logic change**
+Phase 1.3-M1 验证：**10 cases defined, all fields valid**
+Phase 1.3-M2 验证：**10/10 PASS, leak_count=0, missing_expected_count=0**
+- cleanup: deleted=5, remaining=0
 - Test data residue: memories 0 / memory_candidates 0 / memory_items 0
-- memory_events: benign append-only `privacy_gate_test` provenance records (non-removable, acceptable)
+- memory_events: benign append-only eval/test provenance records (non-removable, acceptable)
 
 ## 下一阶段
-**Phase 1.2 Retrieval Cleanup & Boundary Alignment — completed (M1/M2/M3).**
+**Phase 1.3 Minimal Evaluation Harness — completed (M1/M2).**
 
-Recommended next: **Phase 1.3 — Minimal Evaluation Harness**
-- minimal eval set（10-15 条，positive retrieval + negative leakage）
-- eval runner + seed data
+Phase 1.4 candidates:
+- Memory Items Retrieval Bridge Planning（memory_items → primary retrieval design, planning only）
+- Retrieval Eval Expansion（additional query patterns, keyword vs semantic search comparison）
 
-Other Phase 1.3 candidates:
-- Memory Items Retrieval Bridge Planning（memory_items → primary retrieval design）
-- memory_type cleanup（减少 legacy 比例）
+Recommended next: **Memory Items Retrieval Bridge Planning** (planning only)
 
 ---
 
@@ -254,8 +273,12 @@ Other Phase 1.3 candidates:
 - Phase 1.2-M3：所有 internal memory read path 显式传 `actor="local_bot"`（5 处：database.py check_memory_duplicate + main.py AI 提取 ×2 路径 search/recent）
 - Phase 1.2-M3：`get_recent_memories` 四分支（category_id × exclude_privacy）暂不重构 — 124/124 regression 已覆盖，避免引入新的参数索引风险（deferred）
 - Phase 1.2：legacy `memories` 表仍是 primary retrieval source；`memory_items` 是 committed memory lifecycle target，尚未接入 primary retrieval
+- Phase 1.3-M1：eval cases 使用 query_template + placeholder expansion（`{anchor}` / `{<level>_tag}`），由 runner 展开，不写死物理查询
+- Phase 1.3-M2：eval runner 不 import test_privacy_gate_retrieval.py 或 database.py；stdlib only；tag matching 通过嵌入 content 的 `tag:<level_tag>` 实现
+- Phase 1.3-M2：shared anchor 保证所有 5 条 test memory 同时被关键词搜索命中，actor privacy gate 决定实际可见性
 
 > tag: phase-1.2-retrieval-cleanup
+> tag: phase-1.3-minimal-eval
 
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
