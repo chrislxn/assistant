@@ -4727,7 +4727,7 @@ def get_allowed_privacy_levels(actor: str) -> list[str]:
     规则摘要：
       local_bot     → public_like, personal, sensitive, restricted
       api_client    → public_like, personal, sensitive, restricted
-      telegram_bot  → public_like, personal, sensitive, restricted
+      telegram_bot  → public_like, personal, sensitive
       claude_mcp    → public_like, personal, sensitive
       hermes_agent  → public_like, personal
       dev_agent     → public_like, personal

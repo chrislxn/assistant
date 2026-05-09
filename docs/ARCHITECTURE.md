@@ -1,9 +1,9 @@
 # Architecture
 
-> 对应版本：Phase 1.1（retrieval safety completed）
+> 对应版本：Phase 1.4（retrieval bridge in progress）
 > 日期：2026-05-09
 
-本文档描述当前系统的实际架构，不写未来计划。Phase 1.2+ 的演进方向见 `PHASE_1_PLAN.md`。
+本文档描述当前系统的实际架构，不写未来计划。演进路线见 `PHASE_1_PLAN.md` 和 `MEMORY_ITEMS_RETRIEVAL_BRIDGE.md`。
 
 ---
 
@@ -395,14 +395,37 @@ actor privacy gate (SQL-layer, privacy_level filter) ← Phase 1.1 M1/M2
 retrieval gate automated test script                  ← Phase 1.1 M3
 ```
 
-**Phase 1.2+ 推荐方向（未实现）：**
+Phase 1.2 已交付（**当前已实现**）：
+
+```
+retrieval cleanup: hardcoded path removal, dead code, actor audit ← Phase 1.2 M1/M2/M3
+local_bot full positive matrix coverage (109 → 124 checks)
+all internal read paths explicit actor="local_bot"
+```
+
+Phase 1.3 已交付（**当前已实现**）：
+
+```
+evals/retrieval_safety_minimal.jsonl — 10 query-template eval cases
+scripts/eval_retrieval_minimal.py — stdlib-only eval runner
+10/10 query-based safety eval (minimal, not full recall/precision benchmark)
+```
+
+Phase 1.4 — in progress（**当前已实现 M1/M2a**）：
+
+```
+docs/MEMORY_ITEMS_RETRIEVAL_BRIDGE.md — design doc, Strategy B selected
+search_memory_items() / get_recent_memory_items() — shadow helpers (zero callers)
+M2b shadow comparison script — pending
+```
+
+**Phase 1.5+ 推荐方向（未实现）：**
 
 - `actor_scope` 数组过滤（当前 Phase 1.1 只做 privacy_level）
-- minimal eval set（10-15 条，positive retrieval + negative leakage）
-- eval runner + seed data
 - memory_type cleanup（减少 legacy 比例）
 - basic policy rules 抽离
-- privacy-gated retrieval for `memory_items` primary retrieval（当前仅 legacy memories）
+- privacy-gated retrieval for `memory_items` primary retrieval（Phase 1.4 shadow → future promotion）
+- eval expansion: recall@10 / precision@10 benchmark (Phase 1.3 covers minimal safety only)
 
 **未来可选增强（不在 Phase 1 必须范围内）：**
 - FTS + vector + structured hybrid search with RRF reranker

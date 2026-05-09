@@ -408,6 +408,8 @@ python tests/run_eval.py --eval-set docs/eval_set.json --actor claude_mcp
 
 ## 3. Phase 1.2 — Cleanup & Policy
 
+> **Historical note (2026-05-09):** The implemented Phase 1.2 became **Retrieval Cleanup & Boundary Alignment** (test helper cleanup, local_bot matrix coverage, internal actor audit) after Phase 1.1 retrieval safety. The originally planned work in this section — memory_type cleanup, extraction prompt taxonomy update, and basic policy rules extraction from resolver — **remains deferred future work**. The Phase 1.2 tag (`phase-1.2-retrieval-cleanup`) reflects the delivered cleanup scope, not this section's original plan.
+
 ### 3.1 目标
 
 减少 legacy 类型比例，让 memory_type taxonomy 更稳定。resolver 规则从硬编码抽到可配置层。
