@@ -93,7 +93,7 @@ async def get_persona() -> str:
             r = await c.get(
                 f"{KIWI_URL}/debug/memories",
                 headers={"Authorization": f"Bearer {KIWI_TOKEN}"},
-                params={"title": PERSONA_TITLE, "limit": 1},
+                params={"title": PERSONA_TITLE, "limit": 1, "actor": "telegram_bot"},
             )
             r.raise_for_status()
             results = r.json().get("results", [])
@@ -185,7 +185,7 @@ async def search_memory(query: str, limit: int = 10) -> str:
             r = await c.get(
                 f"{KIWI_URL}/debug/memories",
                 headers={"Authorization": f"Bearer {KIWI_TOKEN}"},
-                params={"q": query, "limit": limit},
+                params={"q": query, "limit": limit, "actor": "telegram_bot"},
             )
             r.raise_for_status()
             return _format_memories(r.json())

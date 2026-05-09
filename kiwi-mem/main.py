@@ -53,6 +53,8 @@ from database import (
     list_candidates, get_candidate as db_get_candidate, reject_candidate,
     get_active_core_block, create_core_block_version, log_memory_access,
     migrate_persona_to_core_block,
+    # Phase 1.1
+    get_allowed_privacy_levels,
 )
 from config import (
     get_all_config, set_config, get_config, get_config_int, get_config_bool,
@@ -565,7 +567,7 @@ async def build_system_prompt_with_memories(user_message: str, user_msg_count: i
         
         # ---- ⑥ 语义搜索碎片（动态，每轮变化）----
         inject_limit = await get_max_inject()
-        memories = await search_memories(user_message, limit=inject_limit, project_id=project_id)
+        memories = await search_memories(user_message, limit=inject_limit, project_id=project_id, actor="api_client")
         
         # 加载热度参数（v5.4：可配置阈值）
         from database import get_heat_params
@@ -2222,8 +2224,8 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
 # ============================================================
 
 @app.get("/debug/memories")
-async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, title: str = "", exclude_privacy: str = ""):
-    """查看和搜索记忆（支持分类筛选、title 精确匹配、隐私级别排除）"""
+async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, title: str = "", exclude_privacy: str = "", actor: str = "local_bot"):
+    """查看和搜索记忆（支持分类筛选、title 精确匹配、隐私级别排除、actor privacy gate）"""
     if not await get_memory_enabled():
         return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
 
@@ -2241,29 +2243,38 @@ async def debug_memories(q: str = "", limit: int = 20, category_id: int = None, 
     try:
         if title:
             pool = await get_pool()
+            allowed_privacy = get_allowed_privacy_levels(actor)
             async with pool.acquire() as conn:
                 if excluded_levels:
-                    placeholders = ",".join(f"${i+3}" for i in range(len(excluded_levels)))
+                    placeholders = ",".join(f"${i+4}" for i in range(len(excluded_levels)))
                     rows = await conn.fetch(
-                        f"SELECT * FROM memories WHERE title = $1 AND (privacy_level IS NULL OR privacy_level NOT IN ({placeholders})) ORDER BY created_at DESC LIMIT $2",
-                        title, *excluded_levels, limit,
+                        f"SELECT * FROM memories WHERE title = $1"
+                        f" AND COALESCE(privacy_level, 'personal') = ANY($2::text[])"
+                        f" AND (privacy_level IS NULL OR privacy_level NOT IN ({placeholders}))"
+                        f" ORDER BY created_at DESC LIMIT $3",
+                        title, allowed_privacy, *excluded_levels, limit,
                     )
                 else:
                     rows = await conn.fetch(
-                        "SELECT * FROM memories WHERE title = $1 ORDER BY created_at DESC LIMIT $2",
-                        title, limit,
+                        "SELECT * FROM memories WHERE title = $1"
+                        " AND COALESCE(privacy_level, 'personal') = ANY($2::text[])"
+                        " ORDER BY created_at DESC LIMIT $3",
+                        title, allowed_privacy, limit,
                     )
                 memories = [dict(r) for r in rows]
         elif q:
-            memories = await search_memories(q, limit=limit, track_recall=False)
+            memories = await search_memories(q, limit=limit, track_recall=False, actor=actor,
+                                              exclude_privacy=excluded_levels if excluded_levels else None)
             # 搜索结果如需按分类筛选
             if category_id is not None:
                 memories = [m for m in memories if m.get("category_id") == category_id]
         else:
-            memories = await get_recent_memories(limit=limit, category_id=category_id)
+            memories = await get_recent_memories(limit=limit, category_id=category_id, actor=actor,
+                                                  exclude_privacy=excluded_levels if excluded_levels else None)
 
-        # 隐私级别过滤（对 search 和 recent 路径生效）
-        if excluded_levels:
+        # 隐私级别过滤 — title 精确匹配路径仍需 post-filter
+        # search/recent 路径已由 SQL 层 actor gate + exclude 处理
+        if excluded_levels and title:
             memories = [
                 m for m in memories
                 if m.get("privacy_level") not in excluded_levels

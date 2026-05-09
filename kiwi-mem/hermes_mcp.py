@@ -50,6 +50,9 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {_access_token}"} if _access_token 
 HERMES_ACTOR = "hermes_agent"
 HERMES_TRUST = "assistant_inferred"
 EXCLUDE_PRIVACY = "sealed,restricted"
+# Phase 1.1: Hermes 的 actor gate 进一步排除 sensitive。
+# sealed 不会被任何 actor 返回；restricted 被 hermes_agent 排除。
+# EXCLUDE_PRIVACY 保留作为二级防线（与 SQL 层 actor gate 取交集）。
 HERMES_CORE_WHITELIST = {"response_policy", "active_projects"}
 
 # ============================================================
@@ -204,6 +207,7 @@ async def hermes_search(query: str, limit: int = 10) -> str:
                     "q": query,
                     "limit": limit,
                     "exclude_privacy": EXCLUDE_PRIVACY,
+                    "actor": HERMES_ACTOR,
                 },
             )
             data = resp.json()
@@ -257,6 +261,7 @@ async def hermes_get_recent(limit: int = 20) -> str:
                 params={
                     "limit": limit,
                     "exclude_privacy": EXCLUDE_PRIVACY,
+                    "actor": HERMES_ACTOR,
                 },
             )
             data = resp.json()
@@ -336,6 +341,7 @@ async def hermes_get_context(query: str = "", search_limit: int = 10, recent_lim
                         "q": query.strip(),
                         "limit": search_limit,
                         "exclude_privacy": EXCLUDE_PRIVACY,
+                        "actor": HERMES_ACTOR,
                     },
                 )
                 data = resp.json()
@@ -360,6 +366,7 @@ async def hermes_get_context(query: str = "", search_limit: int = 10, recent_lim
                 params={
                     "limit": recent_limit,
                     "exclude_privacy": EXCLUDE_PRIVACY,
+                    "actor": HERMES_ACTOR,
                 },
             )
             data = resp.json()

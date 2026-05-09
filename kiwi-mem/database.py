@@ -1277,39 +1277,51 @@ async def update_memory(memory_id: int, content: str = None, importance: int = N
 # 记忆搜索（v3.0 向量语义搜索）
 # ============================================================
 
-async def search_memories(query: str, limit: int = 10, track_recall: bool = True, project_id: str = None):
+async def search_memories(query: str, limit: int = 10, track_recall: bool = True, project_id: str = None,
+                       actor: str = "local_bot",
+                       exclude_privacy: Optional[set[str]] = None):
     """
     搜索相关记忆 —— RRF 混合检索（v5.7）
-    
+
     流程：
     1. 生成查询向量
     2. 并行执行向量搜索 + 关键词搜索
     3. RRF（Reciprocal Rank Fusion）合并两路结果
     4. 更新召回追踪数据（可关闭）
     5. 返回 top-K
-    
+
     参数：
         track_recall: 是否记录召回追踪数据。聊天注入时=True，去重对比时=False
         project_id: 项目ID。提供时搜索全局记忆+该项目记忆；不提供时只搜全局记忆
-    
+        actor: Phase 1.1 privacy gate — 根据 actor 过滤 privacy_level（SQL 层）
+        exclude_privacy: 额外排除的 privacy levels
+
     降级：如果 embedding 生成失败，只用关键词搜索
     """
+    allowed_privacy = get_allowed_privacy_levels(actor)
+
     # 候选池扩大到 3 倍，给 RRF 合并留充足的候选
     expanded_limit = limit * 3
-    
+
     # 第一步：生成查询向量
     query_embedding = await get_embedding(query)
-    
+
     heat_params = await get_heat_params()
-    
+
     if query_embedding is None:
         # embedding 失败，只用关键词搜索
         print("⚠️  向量搜索不可用 → 仅关键词搜索")
-        results = await _keyword_search(query, limit, heat_params, project_id=project_id)
+        results = await _keyword_search(query, limit, heat_params, project_id=project_id,
+                                        allowed_privacy=allowed_privacy,
+                                        excluded_privacy=exclude_privacy)
     else:
         # 第二步：并行执行两路搜索
-        vec_task = _vector_search(query_embedding, expanded_limit, heat_params, project_id=project_id)
-        kw_task = _keyword_search(query, expanded_limit, heat_params, project_id=project_id)
+        vec_task = _vector_search(query_embedding, expanded_limit, heat_params, project_id=project_id,
+                                  allowed_privacy=allowed_privacy,
+                                  excluded_privacy=exclude_privacy)
+        kw_task = _keyword_search(query, expanded_limit, heat_params, project_id=project_id,
+                                  allowed_privacy=allowed_privacy,
+                                  excluded_privacy=exclude_privacy)
         vec_results, kw_results = await asyncio.gather(vec_task, kw_task)
         
         # 第三步：RRF 合并
@@ -1384,50 +1396,58 @@ async def search_memories(query: str, limit: int = 10, track_recall: bool = True
     return results
 
 
-async def _vector_search(query_embedding: list, limit: int, heat_params: dict, project_id: str = None) -> list:
+async def _vector_search(query_embedding: list, limit: int, heat_params: dict, project_id: str = None,
+                       allowed_privacy: Optional[list[str]] = None,
+                       excluded_privacy: Optional[set[str]] = None) -> list:
     """
     纯向量语义搜索 —— 不做召回追踪，仅返回评分结果。
     project_id: 提供时搜全局(NULL)+该项目；不提供时只搜全局(NULL)
+    allowed_privacy: Phase 1.1 actor privacy gate（SQL 层）
+    excluded_privacy: 额外排除的 privacy levels（补充限制）
     """
+    if allowed_privacy is None:
+        allowed_privacy = ["public_like", "personal", "sensitive", "restricted"]
+    if excluded_privacy is None:
+        excluded_privacy = set()
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         # 构建项目过滤条件
         if project_id:
             project_filter = "AND (m.project_id IS NULL OR m.project_id = $1)"
-            rows = await conn.fetch(
-                f"""SELECT m.id, m.content, m.importance, m.created_at, m.embedding, 
-                          COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
-                          m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
-                          COALESCE(m.source, 'ai_extracted') as source,
-                          COALESCE(m.emotional_weight, 0) as emotional_weight,
-                          COALESCE(m.access_count, 0) as access_count,
-                          COALESCE(m.access_query_hashes, '[]'::jsonb) as access_query_hashes,
-                          COALESCE(m.is_permanent, false) as is_permanent,
-                          COALESCE(m.resolution, 1.0) as resolution,
-                          m.valid_until, m.project_id
-                   FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
-                   WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
-                     AND (m.valid_until IS NULL OR m.valid_until > NOW())
-                     {project_filter}""",
-                project_id,
-            )
+            privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($2::text[])"
+            params: list = [project_id, allowed_privacy]
+            exclude_clause = ""
+            if excluded_privacy:
+                exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($3::text[])"
+                params.append(list(excluded_privacy))
         else:
-            rows = await conn.fetch(
-                """SELECT m.id, m.content, m.importance, m.created_at, m.embedding, 
-                          COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
-                          m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
-                          COALESCE(m.source, 'ai_extracted') as source,
-                          COALESCE(m.emotional_weight, 0) as emotional_weight,
-                          COALESCE(m.access_count, 0) as access_count,
-                          COALESCE(m.access_query_hashes, '[]'::jsonb) as access_query_hashes,
-                          COALESCE(m.is_permanent, false) as is_permanent,
-                          COALESCE(m.resolution, 1.0) as resolution,
-                          m.valid_until, m.project_id
-                   FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
-                   WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
-                     AND (m.valid_until IS NULL OR m.valid_until > NOW())
-                     AND m.project_id IS NULL"""
-            )
+            project_filter = "AND m.project_id IS NULL"
+            privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($1::text[])"
+            params = [allowed_privacy]
+            exclude_clause = ""
+            if excluded_privacy:
+                exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($2::text[])"
+                params.append(list(excluded_privacy))
+
+        rows = await conn.fetch(
+            f"""SELECT m.id, m.content, m.importance, m.created_at, m.embedding,
+                      COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
+                      m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
+                      COALESCE(m.source, 'ai_extracted') as source,
+                      COALESCE(m.emotional_weight, 0) as emotional_weight,
+                      COALESCE(m.access_count, 0) as access_count,
+                      COALESCE(m.access_query_hashes, '[]'::jsonb) as access_query_hashes,
+                      COALESCE(m.is_permanent, false) as is_permanent,
+                      COALESCE(m.resolution, 1.0) as resolution,
+                      m.valid_until, m.project_id
+               FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
+               WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
+                 AND (m.valid_until IS NULL OR m.valid_until > NOW())
+                 {project_filter}
+                 {privacy_clause}{exclude_clause}""",
+            *params,
+        )
     
     if not rows:
         return []
@@ -1809,16 +1829,24 @@ def extract_search_keywords(query: str) -> List[str]:
     return list(keywords)
 
 
-async def _keyword_search(query: str, limit: int = 10, heat_params: dict = None, project_id: str = None):
+async def _keyword_search(query: str, limit: int = 10, heat_params: dict = None, project_id: str = None,
+                       allowed_privacy: Optional[list[str]] = None,
+                       excluded_privacy: Optional[set[str]] = None):
     """
     关键词搜索（v5.7：升级为 RRF 混合检索的一路）
-    
+
     改进：
     - 同时搜索标题和内容（标题命中权重更高）
     - 返回格式与向量搜索完全一致（含热度字段）
     - 不做召回追踪（由 search_memories 统一处理）
     - v5.8：project_id 过滤
+    - Phase 1.1：privacy gate（SQL 层）
     """
+    if allowed_privacy is None:
+        allowed_privacy = ["public_like", "personal", "sensitive", "restricted"]
+    if excluded_privacy is None:
+        excluded_privacy = set()
+
     keywords = extract_search_keywords(query)
     
     if not keywords:
@@ -1852,15 +1880,28 @@ async def _keyword_search(query: str, limit: int = 10, heat_params: dict = None,
             proj_idx = len(keywords) + 1
             project_clause = f"AND (m.project_id IS NULL OR m.project_id = ${proj_idx})"
             params.append(project_id)
-            limit_idx = proj_idx + 1
+            privacy_idx = proj_idx + 1
         else:
             project_clause = "AND m.project_id IS NULL"
-            limit_idx = len(keywords) + 1
+            privacy_idx = len(keywords) + 1
+
+        # Phase 1.1：actor privacy gate（SQL 层）
+        params.append(allowed_privacy)
+        privacy_clause = f"AND COALESCE(m.privacy_level, 'personal') = ANY(${privacy_idx}::text[])"
+        next_idx = privacy_idx + 1
+
+        exclude_clause = ""
+        if excluded_privacy:
+            params.append(list(excluded_privacy))
+            exclude_clause = f" AND COALESCE(m.privacy_level, 'personal') != ALL(${next_idx}::text[])"
+            next_idx += 1
+
+        limit_idx = next_idx
         params.append(limit)
-        
+
         sql = f"""
-            SELECT 
-                m.id, m.content, m.importance, m.created_at, 
+            SELECT
+                m.id, m.content, m.importance, m.created_at,
                 COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
                 m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
                 COALESCE(m.source, 'ai_extracted') as source,
@@ -1880,6 +1921,7 @@ async def _keyword_search(query: str, limit: int = 10, heat_params: dict = None,
               AND COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
               AND (m.valid_until IS NULL OR m.valid_until > NOW())
               {project_clause}
+              {privacy_clause}{exclude_clause}
             ORDER BY score DESC, m.importance DESC, m.created_at DESC
             LIMIT ${limit_idx}
         """
@@ -1915,43 +1957,88 @@ async def _keyword_search(query: str, limit: int = 10, heat_params: dict = None,
 # 常用查询
 # ============================================================
 
-async def get_recent_memories(limit: int = 20, category_id: int = None, project_id: str = None):
+async def get_recent_memories(limit: int = 20, category_id: int = None, project_id: str = None,
+                           actor: str = "local_bot",
+                           exclude_privacy: Optional[set[str]] = None):
     pool = await get_pool()
+    allowed_privacy = get_allowed_privacy_levels(actor)
+
     async with pool.acquire() as conn:
         # 构建 project_id 过滤条件
         proj_clause = ""
         if project_id:
             proj_clause = f"AND m.project_id = '{project_id}'"
-        
+
+        # Phase 1.1：actor privacy gate（SQL 层）
+        privacy_clause = "AND COALESCE(m.privacy_level, 'personal') = ANY($2::text[])"
+        exclude_clause = ""
+        if exclude_privacy:
+            exclude_clause = " AND COALESCE(m.privacy_level, 'personal') != ALL($3::text[])"
+
         if category_id is not None:
-            return await conn.fetch(
-                f"""SELECT m.id, m.content, m.importance, m.created_at, 
-                          COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
-                          m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
-                          COALESCE(m.source, 'ai_extracted') as source,
-                          COALESCE(m.resolution, 1.0) as resolution
-                   FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
-                   WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
-                     AND (m.valid_until IS NULL OR m.valid_until > NOW())
-                     AND m.category_id = $1
-                     {proj_clause}
-                   ORDER BY m.created_at DESC LIMIT $2""",
-                category_id, limit,
-            )
+            if exclude_privacy:
+                return await conn.fetch(
+                    f"""SELECT m.id, m.content, m.importance, m.created_at,
+                              COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
+                              m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
+                              COALESCE(m.source, 'ai_extracted') as source,
+                              COALESCE(m.resolution, 1.0) as resolution
+                       FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
+                       WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
+                         AND (m.valid_until IS NULL OR m.valid_until > NOW())
+                         AND m.category_id = $1
+                         {privacy_clause}{exclude_clause}
+                         {proj_clause}
+                       ORDER BY m.created_at DESC LIMIT $4""",
+                    category_id, allowed_privacy, list(exclude_privacy), limit,
+                )
+            else:
+                return await conn.fetch(
+                    f"""SELECT m.id, m.content, m.importance, m.created_at,
+                              COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
+                              m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
+                              COALESCE(m.source, 'ai_extracted') as source,
+                              COALESCE(m.resolution, 1.0) as resolution
+                       FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
+                       WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
+                         AND (m.valid_until IS NULL OR m.valid_until > NOW())
+                         AND m.category_id = $1
+                         {privacy_clause}
+                         {proj_clause}
+                       ORDER BY m.created_at DESC LIMIT $3""",
+                    category_id, allowed_privacy, limit,
+                )
         else:
-            return await conn.fetch(
-                f"""SELECT m.id, m.content, m.importance, m.created_at, 
-                          COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
-                          m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
-                          COALESCE(m.source, 'ai_extracted') as source,
-                          COALESCE(m.resolution, 1.0) as resolution
-                   FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
-                   WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
-                     AND (m.valid_until IS NULL OR m.valid_until > NOW())
-                     {proj_clause}
-                   ORDER BY m.created_at DESC LIMIT $1""",
-                limit,
-            )
+            if exclude_privacy:
+                return await conn.fetch(
+                    f"""SELECT m.id, m.content, m.importance, m.created_at,
+                              COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
+                              m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
+                              COALESCE(m.source, 'ai_extracted') as source,
+                              COALESCE(m.resolution, 1.0) as resolution
+                       FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
+                       WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
+                         AND (m.valid_until IS NULL OR m.valid_until > NOW())
+                         {privacy_clause}{exclude_clause}
+                         {proj_clause}
+                       ORDER BY m.created_at DESC LIMIT $3""",
+                    allowed_privacy, list(exclude_privacy), limit,
+                )
+            else:
+                return await conn.fetch(
+                    f"""SELECT m.id, m.content, m.importance, m.created_at,
+                              COALESCE(m.title, '') as title, COALESCE(m.memory_type, 'fragment') as memory_type,
+                              m.category_id, COALESCE(c.name, '') as category_name, COALESCE(c.color, '') as category_color,
+                              COALESCE(m.source, 'ai_extracted') as source,
+                              COALESCE(m.resolution, 1.0) as resolution
+                       FROM memories m LEFT JOIN memory_categories c ON m.category_id = c.id
+                       WHERE COALESCE(m.memory_type, 'fragment') NOT IN ('digested', 'dream_deleted')
+                         AND (m.valid_until IS NULL OR m.valid_until > NOW())
+                         {privacy_clause}
+                         {proj_clause}
+                       ORDER BY m.created_at DESC LIMIT $2""",
+                    allowed_privacy, limit,
+                )
 
 
 async def get_all_memories_count():
