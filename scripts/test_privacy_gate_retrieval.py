@@ -131,6 +131,10 @@ ACTORS = {
         "visible":  {"public_like", "personal"},
         "hidden":   {"sensitive", "restricted", "sealed"},
     },
+    "local_bot": {
+        "visible":  {"public_like", "personal", "sensitive", "restricted"},
+        "hidden":   {"sealed"},
+    },
 }
 
 
