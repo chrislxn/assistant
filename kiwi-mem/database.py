@@ -4883,3 +4883,207 @@ async def get_recent_memory_items(
         }
         for r in rows
     ]
+
+
+# ============================================================
+# Phase 1.5 M2 — dry-run candidate review policy classifier
+# ============================================================
+
+# Memory types that should default to short-term observation, not manual review.
+_SHORT_TERM_TYPES = frozenset({
+    "emotional_observation",
+    "thought_observation",
+    "session_observation",
+    "short_term_state",
+})
+
+# Memory types eligible for medium-factual auto-commit (non-high-risk, durable).
+_MEDIUM_FACTUAL_TYPES = frozenset({
+    "academic_fact",
+    "grade_fact",
+    "project_state",
+    "project_decision",
+    "procedure",
+    "device_inventory",
+    "technical_environment",
+    "external_fact",
+    "project_knowledge",
+})
+
+# High-stakes types: always requires_review (mirrors Phase 1.0 M2 _HIGH_STAKES_TYPES)
+_P1_5_HIGH_STAKES_TYPES = frozenset({
+    "identity_fact", "relationship_context", "health_pattern",
+    "health_baseline", "risk_flag", "policy_rule",
+})
+
+# Diagnosis keywords (mirrors Phase 1.0 M2 _DIAGNOSIS_KEYWORDS)
+_P1_5_DIAGNOSIS_KEYWORDS = frozenset({
+    "diagnosis", "diagnosed", "clinical", "medical condition",
+    "chronic", "syndrome", "disorder", "disease",
+})
+
+# Negative inference patterns: if the rendered_text describes a stable negative
+# capability attribution, auto-reject (never auto-commit).
+_NEGATIVE_INFERENCE_PATTERNS = [
+    "学习能力差",
+    "学不会",
+    "不适合学习",
+    "天生不",
+    "永远不",
+    "总是失败",
+    "注定",
+]
+
+
+def classify_candidate_review_policy(candidate: dict) -> dict:
+    """
+    Dry-run classification of a candidate into a review policy channel.
+
+    Returns a dict with recommended_action, reason, and metadata.
+    Does NOT modify the database. Does NOT change resolve_candidate behavior.
+
+    recommended_action values:
+      - short_term_auto_write
+      - medium_factual_auto_commit
+      - manual_review
+      - auto_reject_or_expire
+      - keep_pending
+    """
+    memory_type = (candidate.get("memory_type") or "").strip()
+    source_trust = (candidate.get("source_trust") or "").strip()
+    rendered_text = (candidate.get("rendered_text") or "").strip()
+    subject_key = (candidate.get("subject_key") or "").strip()
+    predicate_key = (candidate.get("predicate_key") or "").strip()
+    privacy_level = (candidate.get("privacy_level") or "personal").strip()
+    source_event_ids = candidate.get("source_event_ids") or []
+    importance = candidate.get("importance", 5)
+
+    text_lower = (rendered_text + " " + str(candidate.get("canonical_value") or "")).lower()
+
+    # Gate 1: high-stakes → always manual_review
+    if memory_type in _P1_5_HIGH_STAKES_TYPES:
+        return {
+            "recommended_action": "manual_review",
+            "reason": f"memory_type={memory_type} is high-stakes",
+            "memory_type": memory_type,
+            "review_required": True,
+            "should_commit_long_term": True,
+            "suggested_status": "requires_review",
+            "suggested_ttl_days": None,
+            "suggested_importance": importance,
+            "risk_level": "high",
+        }
+
+    # Gate 2: diagnosis-like content → manual_review
+    if any(kw in text_lower for kw in _P1_5_DIAGNOSIS_KEYWORDS):
+        return {
+            "recommended_action": "manual_review",
+            "reason": "diagnosis-like content requires human review",
+            "memory_type": memory_type,
+            "review_required": True,
+            "should_commit_long_term": True,
+            "suggested_status": "requires_review",
+            "suggested_ttl_days": None,
+            "suggested_importance": importance,
+            "risk_level": "high",
+        }
+
+    # Gate 3: negative capability inference → auto_reject_or_expire
+    for pattern in _NEGATIVE_INFERENCE_PATTERNS:
+        if pattern in rendered_text:
+            return {
+                "recommended_action": "auto_reject_or_expire",
+                "reason": f"negative capability inference pattern '{pattern}' — never auto-commit",
+                "memory_type": memory_type,
+                "review_required": False,
+                "should_commit_long_term": False,
+                "suggested_status": "rejected",
+                "suggested_ttl_days": None,
+                "suggested_importance": 0,
+                "risk_level": "high",
+            }
+
+    # Gate 4: third-party inference of user identity → auto_reject
+    if (source_trust == "third_party_doc"
+            and memory_type in ("preference", "identity_fact", "relationship_context")):
+        return {
+            "recommended_action": "auto_reject_or_expire",
+            "reason": "third-party source inferring user identity/preference — never auto-commit",
+            "memory_type": memory_type,
+            "review_required": False,
+            "should_commit_long_term": False,
+            "suggested_status": "rejected",
+            "suggested_ttl_days": None,
+            "suggested_importance": 0,
+            "risk_level": "high",
+        }
+
+    # Gate 5: short-term emotional / thought observations
+    if memory_type in _SHORT_TERM_TYPES:
+        durable_keywords = ("长期", "一直", "总是", "从来", "永远", "稳定地", "持续")
+        looks_durable = any(kw in rendered_text for kw in durable_keywords)
+
+        if looks_durable and ("关系" in rendered_text or "人格" in rendered_text):
+            return {
+                "recommended_action": "manual_review",
+                "reason": "short-term type but rendered_text contains durable relationship/personality language",
+                "memory_type": memory_type,
+                "review_required": True,
+                "should_commit_long_term": True,
+                "suggested_status": "requires_review",
+                "suggested_ttl_days": None,
+                "suggested_importance": max(importance, 7),
+                "risk_level": "high",
+            }
+
+        return {
+            "recommended_action": "short_term_auto_write",
+            "reason": f"memory_type={memory_type} is short-term observation",
+            "memory_type": memory_type,
+            "review_required": False,
+            "should_commit_long_term": False,
+            "suggested_status": "observation_only",
+            "suggested_ttl_days": 7 if importance < 4 else 14,
+            "suggested_importance": importance,
+            "risk_level": "low",
+        }
+
+    # Gate 6: medium factual → auto-commit eligible
+    if memory_type in _MEDIUM_FACTUAL_TYPES:
+        if not source_event_ids:
+            return {
+                "recommended_action": "auto_reject_or_expire",
+                "reason": "medium factual candidate missing source_event_ids — cannot commit without provenance",
+                "memory_type": memory_type,
+                "review_required": False,
+                "should_commit_long_term": False,
+                "suggested_status": "rejected",
+                "suggested_ttl_days": None,
+                "suggested_importance": 0,
+                "risk_level": "medium",
+            }
+
+        return {
+            "recommended_action": "medium_factual_auto_commit",
+            "reason": f"memory_type={memory_type} with source_trust={source_trust} — medium factual auto-commit",
+            "memory_type": memory_type,
+            "review_required": False,
+            "should_commit_long_term": True,
+            "suggested_status": "pending_auto",
+            "suggested_ttl_days": None,
+            "suggested_importance": min(importance, 7),
+            "risk_level": "medium",
+        }
+
+    # Gate 7: default — keep_pending (conservative fallback)
+    return {
+        "recommended_action": "keep_pending",
+        "reason": f"no specific policy rule matched for memory_type={memory_type}",
+        "memory_type": memory_type,
+        "review_required": True,
+        "should_commit_long_term": False,
+        "suggested_status": "pending",
+        "suggested_ttl_days": None,
+        "suggested_importance": importance,
+        "risk_level": "medium",
+    }
