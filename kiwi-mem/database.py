@@ -4272,6 +4272,15 @@ async def resolve_candidate(candidate_id: str, *, force_commit: bool = False) ->
             return {"action": "error",
                     "reason": "candidate already rejected, use reopen if needed (not in Phase 1.0)",
                     "memory_id": None, "legacy_id": None, "superseded_id": None}
+        # Phase 1.5-M3b: observation_only / expired cannot be resolved
+        if current_status == "observation_only":
+            return {"action": "error",
+                    "reason": "observation_only candidates cannot be resolved or committed",
+                    "memory_id": None, "legacy_id": None, "superseded_id": None}
+        if current_status == "expired":
+            return {"action": "error",
+                    "reason": "expired candidates cannot be resolved or committed",
+                    "memory_id": None, "legacy_id": None, "superseded_id": None}
 
         source_trust = cand["source_trust"] or "unknown"
         memory_type = cand["memory_type"] or "unknown"
@@ -4284,6 +4293,27 @@ async def resolve_candidate(candidate_id: str, *, force_commit: bool = False) ->
         privacy_level = cand["privacy_level"] or "personal"
         source_event_ids = cand["source_event_ids"] or []
         actor_scope = cand["actor_scope"] or ["local_bot", "claude_mcp"]
+
+        # ------------------------------------------------------------
+        # Phase 1.5-M3b: short_term_auto_write → observation_only
+        # ------------------------------------------------------------
+        if not force_commit and current_status in ("pending", "pending_auto"):
+            decision = classify_candidate_review_policy(dict(cand))
+            if decision["recommended_action"] == "short_term_auto_write":
+                ttl_raw = decision.get("suggested_ttl_days", 14)
+                ttl = ttl_raw if ttl_raw in (7, 14, 30) else 14
+                await conn.execute(
+                    """UPDATE memory_candidates
+                       SET status = 'observation_only',
+                           valid_to = NOW() + ($1::int * INTERVAL '1 day')
+                       WHERE candidate_id = $2""",
+                    ttl, candidate_id,
+                )
+                return {
+                    "action": "observation_only",
+                    "reason": f"short_term_auto_write, ttl={ttl}d: {decision['reason']}",
+                    "memory_id": None, "legacy_id": None, "superseded_id": None,
+                }
 
         # ------------------------------------------------------------
         # Phase 1: 无副作用判断 (compute flags only)
