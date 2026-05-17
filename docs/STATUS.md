@@ -1,8 +1,8 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.5 in progress — M2 classifier + M3a admin support completed**（31/31 + 24/24 PASS）。
-Phase 1.5-M3b (resolver: short_term_auto_write → observation_only) is next。
+**Phase 1.5 in progress — M2 + M3a + M3b completed**（31/31 + 24/24 + 17/17 PASS）。
+Phase 1.5-M3b completed — short_term_auto_write → observation_only in resolver (17/17 PASS)。
 Phase 1.0/1.1/1.2/1.3/1.4 completed / sealed；Hermes conservative integration completed。
 
 ## 当前系统状态
@@ -307,6 +307,18 @@ Phase 1.4-M2b 验证：**14/14 PASS, leak=0, mismatch=0, cleanup 5+5/0+0**
 - **Tests**: `test_observation_m3a.py` 24/24 PASS（real DB candidates via asyncpg, HTTP admin API, full cleanup）
 - **Commits**: `9361e2c`, `c983e63`
 
+### Phase 1.5-M3b — Resolver: short_term_auto_write → observation_only
+
+- `resolve_candidate()` 调用 `classify_candidate_review_policy()`，仅对 `current_status IN ('pending','pending_auto')` 且 `not force_commit`
+- 仅启用 `recommended_action == "short_term_auto_write"`；所有其他 channel 保持现有行为
+- `short_term_auto_write` → `status='observation_only'`, `valid_to = NOW() + ttl_d days`
+- TTL whitelist: 7 / 14 / 30，fallback 14
+- SQL: `NOW() + ($1::int * INTERVAL '1 day')`（参数化）
+- **Safety guards**: committed / rejected / observation_only / expired 均为 terminal（不可被 resolve 或 force-commit）；`requires_review` 不降级
+- **Boundaries**: 不写 `memory_items` / `memories`；不改 retrieval / Hermes / Telegram / chat；不改 core_blocks
+- **Tests**: `test_observation_m3b.py` 17/17 PASS（9 个真实 candidate，覆盖 routing / high-stakes / terminal guard / cleanup）
+- **Commit**: `059193f`
+
 ## 下一阶段
 **Phase 1.4 Memory Items Retrieval Bridge — completed (M1/M1.5/M2a/M2b).**
 
@@ -321,7 +333,7 @@ Important boundaries:
 Phase 1.5+ candidates:
 - Phase 1.5-M2: dry-run classifier **completed**（31/31 PASS）
 - Phase 1.5-M3a: observation-only admin support **completed**（24/24 PASS）
-- Phase 1.5-M3b: enable `short_term_auto_write` → `observation_only` + TTL in resolver（only this channel; no medium_factual_auto_commit, no auto_reject, no digest, no retrieval）
+- Phase 1.5-M3b: resolver short_term_auto_write → observation_only **completed**（17/17 PASS）
 - Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred — see `docs/PHASE_1_5_REQUIREMENTS.md` for full requirements）
 - Phase 1.6: Provider Boundary & Local Model Routing（Provider Boundary Policy not implemented yet）
 - Future: `memory_items` primary retrieval switch planning, only after more shadow/eval confidence
@@ -411,18 +423,15 @@ M3a does NOT:
 | `eval_retrieval_minimal.py` | 10/10 PASS |
 | `eval_memory_items_shadow.py` | 14/14 PASS |
 
-## Immediate Next Step: Phase 1.5-M3b
+## Immediate Next Step: Phase 1.5-M3c
 
-Phase 1.5-M3b planned — enable only `short_term_auto_write` → `observation_only` + `valid_to`:
-- Use `classify_candidate_review_policy()` only for this single channel
-- Set `valid_to` using `suggested_ttl_days`
-- Do NOT write `memory_items`
-- Do NOT write legacy `memories`
-- Do NOT enable `medium_factual_auto_commit`
-- Do NOT enable `auto_reject_or_expire`
-- Do NOT implement digest
-- Do NOT implement retrieval
-- Do NOT implement expiry script
+Phase 1.5-M3c candidate — expiry script:
+- `scripts/expire_observations.py`
+- `observation_only` with `valid_to < NOW()` → `status='expired'`
+- Preserve provenance (no deletion)
+- No digest
+- No retrieval
+- No medium factual auto-commit
 
 ## Future Phase Candidates
 
