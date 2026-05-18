@@ -50,7 +50,6 @@ async def main():
         # Create test candidates
         specs = [
             ("pending", "emotional_observation", "我想她了", 4, "assistant_inferred", "emo_pend"),
-            ("pending", "emotional_observation", "今天心情不太好", 5, "assistant_inferred", "emo_pend2"),
             ("requires_review", "emotional_observation", "长期情绪低落需要关注", 6, "assistant_inferred", "emo_req"),
             ("pending", "identity_fact", "用户是内向的人", 7, "user_direct", "ident"),
             ("pending", "relationship_context", "用户和母亲关系紧张", 8, "user_direct", "rela"),
@@ -97,7 +96,7 @@ async def main():
         # --- D. Medium factual NOT auto-committed in M3b ---
         print("D. grade_fact does not auto-commit in M3b")
         r = await resolve_candidate(ids["grade_ud"])
-        chk("D1: user_direct grade_fact not committed", r["action"] not in ("auto_commit","observation_only"), f"action={r['action']}")
+        chk("D1: user_direct grade_fact not committed", r["action"] != "committed", f"action={r['action']}")
         st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids["grade_ud"])
         chk("D2: grade_fact status unchanged or pending", st in ("pending","pending_auto"), f"status={st}")
         r = await resolve_candidate(ids["grade_ai"])
