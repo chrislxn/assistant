@@ -52,6 +52,14 @@ async def main():
     print("Phase 1.5-M3c: expire observations\n")
 
     try:
+        # Baseline check: refuse APPLY if real expired observation_only rows exist
+        baseline_ids = [str(r["candidate_id"]) for r in await pool.fetch(
+            """SELECT candidate_id FROM memory_candidates
+               WHERE status = 'observation_only'
+                 AND valid_to IS NOT NULL
+                 AND valid_to < NOW()""")]
+        baseline_n = len(baseline_ids)
+
         for status, vto_expr, key in SPECS:
             cid = str(uuid.uuid4())
             if vto_expr:
@@ -75,7 +83,8 @@ async def main():
         r = run_expire_script({"DRY_RUN": "1"})
         chk("A1: status=ok", r.get("status") == "ok", f"resp={r}")
         chk("A2: dry_run=true", r.get("dry_run") is True)
-        chk("A3: matched_count=1", r.get("matched_count") == 1, f"got {r.get('matched_count')}")
+        expected_matched = baseline_n + 1
+        chk("A3: matched_count", r.get("matched_count") == expected_matched, f"expected {expected_matched}, got {r.get('matched_count')}")
         chk("A4: expired_count=0", r.get("expired_count") == 0, f"got {r.get('expired_count')}")
 
         for s in SPECS:
@@ -85,28 +94,33 @@ async def main():
 
         # --- B. Apply ---
         print("\nB. Apply")
-        r = run_expire_script({"APPLY": "1"})
-        chk("B1: status=ok", r.get("status") == "ok")
-        chk("B2: dry_run=false", r.get("dry_run") is False)
-        chk("B3: matched_count=1", r.get("matched_count") == 1)
-        chk("B4: expired_count=1", r.get("expired_count") == 1, f"got {r.get('expired_count')}")
+        if baseline_n > 0:
+            chk("B0: skip apply (pre-existing expired obs rows would be mutated)", False,
+                f"baseline={baseline_n} rows, ids={baseline_ids[:5]}")
+            print("  ⚠️  Skipping apply tests to avoid mutating real data. Clean up expired observation_only rows first.")
+        else:
+            r = run_expire_script({"APPLY": "1"})
+            chk("B1: status=ok", r.get("status") == "ok")
+            chk("B2: dry_run=false", r.get("dry_run") is False)
+            chk("B3: matched_count=1", r.get("matched_count") == 1)
+            chk("B4: expired_count=1", r.get("expired_count") == 1, f"got {r.get('expired_count')}")
 
-        st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
-        chk("B5: obs_expired → expired", st == "expired", f"status={st}")
-        rv = await pool.fetchval("SELECT reviewed_by FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
-        chk("B6: reviewed_by=expiry_job", rv == "expiry_job", f"reviewed_by={rv}")
-        ra = await pool.fetchval("SELECT reviewed_at FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
-        chk("B7: reviewed_at set", ra is not None)
+            st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
+            chk("B5: obs_expired → expired", st == "expired", f"status={st}")
+            rv = await pool.fetchval("SELECT reviewed_by FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
+            chk("B6: reviewed_by=expiry_job", rv == "expiry_job", f"reviewed_by={rv}")
+            ra = await pool.fetchval("SELECT reviewed_at FROM memory_candidates WHERE candidate_id=$1::uuid", ids["obs_expired"])
+            chk("B7: reviewed_at set", ra is not None)
 
-        for key in ("obs_active", "obs_null", "pend_exp", "req_exp"):
-            expected = [s[0] for s in SPECS if s[2] == key][0]
-            st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids[key])
-            chk(f"B8: {key} unchanged", st == expected, f"status={st}")
+            for key in ("obs_active", "obs_null", "pend_exp", "req_exp"):
+                expected = [s[0] for s in SPECS if s[2] == key][0]
+                st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids[key])
+                chk(f"B8: {key} unchanged", st == expected, f"status={st}")
 
-        for key in ("exp_exp", "com_exp", "rej_exp"):
-            expected = [s[0] for s in SPECS if s[2] == key][0]
-            st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids[key])
-            chk(f"B9: {key} unchanged", st == expected, f"status={st}")
+            for key in ("exp_exp", "com_exp", "rej_exp"):
+                expected = [s[0] for s in SPECS if s[2] == key][0]
+                st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids[key])
+                chk(f"B9: {key} unchanged", st == expected, f"status={st}")
 
         mc = await pool.fetchval("SELECT count(*) FROM memory_items WHERE rendered_text LIKE $1", f"%{TAG}%")
         chk("B10: no memory_items", mc == 0, f"rows={mc}")

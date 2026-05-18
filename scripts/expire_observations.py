@@ -15,7 +15,8 @@ if not DATABASE_URL:
     print(json.dumps({"status": "error", "reason": "DATABASE_URL not set"})); sys.exit(2)
 
 APPLY = os.getenv("APPLY", "") == "1"
-DRY_RUN = os.getenv("DRY_RUN", "") == "1" or not APPLY  # default dry-run
+# APPLY=1 → apply; otherwise dry-run. DRY_RUN env var is a no-op alias for documentation only.
+DRY_RUN = not APPLY
 
 
 async def run():
