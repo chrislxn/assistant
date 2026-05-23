@@ -53,8 +53,8 @@ async def main():
             ("requires_review", "emotional_observation", "长期情绪低落需要关注", 6, "assistant_inferred", "emo_req"),
             ("pending", "identity_fact", "用户是内向的人", 7, "user_direct", "ident"),
             ("pending", "relationship_context", "用户和母亲关系紧张", 8, "user_direct", "rela"),
-            ("pending", "grade_fact", "CSC165 51", 5, "user_direct", "grade_ud"),
             ("pending", "grade_fact", "PHY131 inferred good", 5, "assistant_inferred", "grade_ai"),
+            ("pending", "grade_fact", "另一次推断成绩", 5, "assistant_inferred", "grade_ai2"),
             ("observation_only", "emotional_observation", "already obs", 4, "assistant_inferred", "obs_exist"),
             ("expired", "thought_observation", "already expired", 3, "assistant_inferred", "exp_exist"),
         ]
@@ -93,14 +93,14 @@ async def main():
         chk("C2: relationship_context not observation_only", r["action"] != "observation_only", f"action={r['action']}")
         print("")
 
-        # --- D. Medium factual NOT auto-committed in M3b ---
-        print("D. grade_fact does not auto-commit in M3b")
-        r = await resolve_candidate(ids["grade_ud"])
-        chk("D1: user_direct grade_fact not committed", r["action"] != "committed", f"action={r['action']}")
-        st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids["grade_ud"])
-        chk("D2: grade_fact status unchanged or pending", st in ("pending","pending_auto"), f"status={st}")
+        # --- D. Medium factual NOT auto-committed in M3b (assistant_inferred blocked by R1) ---
+        print("D. assistant_inferred grade_fact not auto-committed")
         r = await resolve_candidate(ids["grade_ai"])
-        chk("D3: assistant_inferred grade_fact not committed", r["action"] not in ("auto_commit","observation_only"), f"action={r['action']}")
+        chk("D1: assistant_inferred grade_fact not committed", r["action"] not in ("auto_commit","committed"), f"action={r['action']}")
+        st = await pool.fetchval("SELECT status FROM memory_candidates WHERE candidate_id=$1::uuid", ids["grade_ai"])
+        chk("D2: status unchanged", st in ("pending","pending_auto"), f"status={st}")
+        r = await resolve_candidate(ids["grade_ai2"])
+        chk("D3: second assistant_inferred grade_fact not committed", r["action"] not in ("auto_commit","committed"), f"action={r['action']}")
         print("")
 
         # --- E. observation_only / expired blocked ---
