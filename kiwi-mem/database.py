@@ -4369,11 +4369,32 @@ async def resolve_candidate(candidate_id: str, *, force_commit: bool = False) ->
                         "reason": f"source_trust={source_trust}, extractor_name={extractor_name} never auto-commits",
                         "memory_id": None, "legacy_id": None, "superseded_id": None}
 
+        # ------------------------------------------------------------
+        # Phase 1.5-M4: medium factual auto-commit
+        # ------------------------------------------------------------
+        # Resolver policy is authoritative. Classifier alone is insufficient.
+        can_auto_commit = False
+
+        if (not force_commit
+                and current_status in ("pending", "pending_auto")
+                and rendered_text
+                and privacy_level != "sealed"
+                and source_event_ids and len(source_event_ids) > 0
+                and memory_type in _M4_ALLOWED_TYPES
+                and not has_diagnosis):
+            if memory_type in _M4_ACADEMIC_TYPES:
+                src_ok = source_trust in _M4_ACADEMIC_SOURCES
+            else:
+                src_ok = source_trust in _M4_PROJECT_SOURCES
+            if src_ok:
+                decision = classify_candidate_review_policy(dict(cand))
+                if decision["recommended_action"] == "medium_factual_auto_commit":
+                    can_auto_commit = True
+
         # ---- Determine auto-commit eligibility (side-effect-free) ----
         if force_commit:
             can_auto_commit = True
         else:
-            can_auto_commit = False
             if source_trust == "user_direct":
                 # WARN-1: 使用 low-risk whitelist，未知类型默认不 auto_commit
                 if memory_type in _LOW_RISK_TYPES and not has_diagnosis:
@@ -4927,6 +4948,22 @@ async def get_recent_memory_items(
         for r in rows
     ]
 
+
+# ============================================================
+# Phase 1.5 M4 — medium factual auto-commit type/source policy
+# ============================================================
+
+# Types eligible for M4 auto-commit (separate from legacy _LOW_RISK_TYPES).
+_M4_ACADEMIC_TYPES = frozenset({"grade_fact", "academic_fact"})
+_M4_PROJECT_TYPES = frozenset({
+    "project_state", "project_decision", "technical_environment",
+    "device_inventory", "procedure", "project_knowledge",
+})
+_M4_ALLOWED_TYPES = _M4_ACADEMIC_TYPES | _M4_PROJECT_TYPES
+
+# Source_trust policy split: academic facts require user-supplied evidence.
+_M4_ACADEMIC_SOURCES = frozenset({"user_direct", "user_confirmed"})
+_M4_PROJECT_SOURCES = frozenset({"user_direct", "user_confirmed", "system_generated"})
 
 # ============================================================
 # Phase 1.5 M2 — dry-run candidate review policy classifier
