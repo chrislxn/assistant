@@ -1,7 +1,7 @@
 # STATUS — 最后更新：2026-05-09
 
 ## 当前阶段
-**Phase 1.5 in progress — M2 + M3a + M3b + M3c completed**（31/31 + 24/24 + 17/17 + 31/31 PASS）。
+**Phase 1.5 in progress — M2 + M3a + M3b + M3c + M4 completed**（31/31 + 24/24 + 17/17 + 31/31 + 23/23 PASS）。
 Phase 1.5-M3b completed — short_term_auto_write → observation_only in resolver (17/17 PASS)。
 Phase 1.0/1.1/1.2/1.3/1.4 completed / sealed；Hermes conservative integration completed。
 
@@ -329,6 +329,19 @@ Phase 1.4-M2b 验证：**14/14 PASS, leak=0, mismatch=0, cleanup 5+5/0+0**
 - **Tests**: `test_expire_observations.py` 31/31 PASS（8 candidates, dry-run + apply, cleanup 0）
 - **Commit**: `64e5bfd`
 
+### Phase 1.5-M4 — Medium Factual Auto-Commit
+
+- Enabled `medium_factual_auto_commit` for narrow, resolver-gated low-risk medium factual candidates
+- Uses `classify_candidate_review_policy()` as signal + resolver defense-in-depth as authoritative gate
+- Reuses existing dual-write path: `memory_items` + legacy `memories` + candidate status `committed`
+- **Allowed academic types**: `grade_fact`, `academic_fact`（source: `user_direct`, `user_confirmed`）
+- **Allowed project/system types**: `project_state`, `project_decision`, `technical_environment`, `device_inventory`, `procedure`, `project_knowledge`（source: `user_direct`, `user_confirmed`, `system_generated`）
+- **Defense-in-depth**: `can_auto_commit = False` init → M4 branch checks all 9 conditions → classifier confirms → only then `can_auto_commit = True`
+- **Resolver is authoritative** — classifier recommendation alone is insufficient
+- **Not changed**: `_LOW_RISK_TYPES`, legacy `external_fact`/`preference`/`episodic_event`, health/identity/relationship auto-commit, retrieval, Hermes/Telegram/chat, admin API, provider routing
+- **Tests**: `test_medium_factual_m4.py` 23/23 PASS（18 candidates, 5 groups）
+- **Commits**: `b6db175`, `09bd981`
+
 ## 下一阶段
 **Phase 1.4 Memory Items Retrieval Bridge — completed (M1/M1.5/M2a/M2b).**
 
@@ -345,6 +358,7 @@ Phase 1.5+ candidates:
 - Phase 1.5-M3a: observation-only admin support **completed**（24/24 PASS）
 - Phase 1.5-M3b: resolver short_term_auto_write → observation_only **completed**（17/17 PASS）
 - Phase 1.5-M3c: observation expiry script **completed**（31/31 PASS）
+- Phase 1.5-M4: medium factual auto-commit **completed**（23/23 PASS）
 - Phase 1.5: Candidate Review Policy & Short-Term Observation Layer（deferred — see `docs/PHASE_1_5_REQUIREMENTS.md` for full requirements）
 - Phase 1.6: Provider Boundary & Local Model Routing（Provider Boundary Policy not implemented yet）
 - Future: `memory_items` primary retrieval switch planning, only after more shadow/eval confidence
@@ -434,12 +448,12 @@ M3a does NOT:
 | `eval_retrieval_minimal.py` | 10/10 PASS |
 | `eval_memory_items_shadow.py` | 14/14 PASS |
 
-## Immediate Next Step: Phase 1.5-M4 Planning
+## Immediate Next Step: Phase 1.5-M5 Planning
 
-Phase 1.5-M4 candidate — medium factual auto-commit:
-- Only with `source_trust`/provenance guard
-- No high-risk facts (health_baseline, relationship_context, risk_flag, policy_rule)
-- Must start with patch plan, not implementation
+Phase 1.5-M5 candidate — observation_only digest planning:
+- Aggregate short-term observations into digest candidates
+- No direct commit; batch review
+- No retrieval changes; no Hermes/Telegram changes
 
 ## Future Phase Candidates
 
@@ -447,11 +461,6 @@ Phase 1.5-M4 candidate — medium factual auto-commit:
 - `scripts/expire_observations.py`
 - `observation_only` + `valid_to < NOW()` → `status='expired'`
 - Preserve provenance (no deletion)
-
-**Phase 1.5-M4** — medium factual auto-commit:
-- Only after more review and tests
-- `source_trust`/provenance-gated
-- No high-risk facts
 
 **Phase 1.5-M5** — digest planning/prototype:
 - Weekly `observation_only` → digest candidate
