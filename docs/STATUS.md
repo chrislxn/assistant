@@ -502,5 +502,28 @@ Phase 1.5-M5 candidate — observation_only digest planning:
 
 No new tag yet — Phase 1.5 is in progress (M1/M2/M3a done; M3b/M3c/M4/M5 pending).
 
+---
+
+## Health Chain (2026-05-25)
+
+独立于 memory lifecycle 的健康数据管道。
+
+### Data sources
+- **Apple Watch** (Health Auto Export → POST /data/health, 30 min auto-sync)
+- **Withings** (Cloud API OAuth 2.0 → `connectors/withings/sync.py` → POST /data/health, daily cron 11:07)
+
+### Changes
+- **Withings connector** (`connectors/withings/sync.py`): OAuth 2.0 PKCE → fetch weight, body_fat, lean_body_mass, BMI, muscle_mass, bone_mass, blood_pressure → POST to /data/health
+- **Callback endpoint** (`GET/POST/HEAD /withings/callback`): OAuth redirect target, public via `agent.xeon.im`, no auth
+- **Health metrics mapping** (`main.py`): `_METRIC_DISPLAY` expanded from 5 → 31 entries; generic `_VAL_KEY_MAP` for per-metric value_json keys; muscle_mass / bone_mass support
+- **Health summary**: 8 → 41 metric types in `health_summary`, all raw_health_data metrics now aggregate
+- **Telegram bot** (`bot.py`): `_DISPLAY` map extended to 31 metrics with (label, unit, value_json_key) tuples; yesterday fallback for low-frequency metrics; raw_health_data fallback queries removed
+
+### Non-changes
+- No memory lifecycle code modified (resolve_candidate, memory_candidates, memory_items, memories, retrieval)
+- No core_blocks touched
+- No Hermes memory-path permission changes
+- Health path remains separate from Memory path
+
 ## 读这里开始下一个 session
 CONTEXT.md → logs/2026-05-07.md → logs/2026-05-08.md → 本文件 → ARCHITECTURE.md → PHASE_0_5_SUMMARY.md
