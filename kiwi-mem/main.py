@@ -4953,6 +4953,88 @@ async def _process_health_data(body: dict) -> None:
                 if d:
                     distance_by_date[d] += float(e.get("qty", 0))
 
+    # ── 通用：所有含 qty 的 health_metrics（取当日最新值）──────
+    # 已特殊处理的跳过（step_count / heart_rate / resting_heart_rate /
+    # active_energy / walking_running_distance 在上面用聚合逻辑处理）
+    _SPECIAL_METRICS = {
+        "step_count", "heart_rate", "resting_heart_rate",
+        "active_energy", "walking_running_distance",
+    }
+    _METRIC_DISPLAY: dict[str, tuple[str, str]] = {
+        # (metric_type 存入 health_summary 的 key, value_json 中的 key)
+        "weight_body_mass":                  ("weight",         "kg"),
+        "body_fat_percentage":               ("body_fat",       "pct"),
+        "lean_body_mass":                    ("lean_body_mass", "kg"),
+        "body_mass_index":                   ("bmi",            "bmi"),
+        "heart_rate_variability":            ("hrv",            "ms"),
+        "respiratory_rate":                  ("respiratory_rate", "brpm"),
+        "blood_oxygen_saturation":           ("blood_oxygen",   "pct"),
+        "vo2_max":                           ("vo2_max",        "ml_kg_min"),
+        "basal_energy_burned":               ("basal_energy",   "kcal"),
+        "apple_exercise_time":               ("exercise_time",  "min"),
+        "apple_stand_hour":                  ("stand_hour",     "count"),
+        "apple_stand_time":                  ("stand_time",     "min"),
+        "apple_sleeping_wrist_temperature":  ("wrist_temp",     "celsius"),
+        "environmental_audio_exposure":      ("env_audio",      "dba"),
+        "headphone_audio_exposure":          ("hp_audio",       "dba"),
+        "time_in_daylight":                  ("daylight",       "min"),
+        "flights_climbed":                   ("flights",        "count"),
+        "physical_effort":                   ("physical_effort","met"),
+        "walking_speed":                     ("walk_speed",     "km_h"),
+        "walking_step_length":               ("step_length",    "cm"),
+        "walking_asymmetry_percentage":      ("walk_asymmetry", "pct"),
+        "walking_double_support_percentage": ("walk_dbl_support","pct"),
+        "walking_heart_rate_average":        ("walk_hr_avg",    "bpm"),
+        "stair_speed_up":                    ("stair_up",       "m_s"),
+        "stair_speed_down":                  ("stair_down",     "m_s"),
+        "breathing_disturbances":            ("breathing_dist", "count"),
+        "muscle_mass":                       ("muscle_mass",    "kg"),
+        "bone_mass":                         ("bone_mass",      "kg"),
+        "swimming_distance":                 ("swim_distance",  "m"),
+        "swimming_stroke_count":             ("swim_strokes",   "count"),
+        "underwater_temperature":            ("water_temp",     "celsius"),
+        "six_minute_walking_test_distance":  ("walk_6min",      "m"),
+    }
+    generic_by_date: dict[str, dict] = {}  # {metric_type: {date: {"v": qty, "_ts": ts}}}
+    _VAL_KEY_MAP: dict[str, str] = {}      # {metric_type: value_json key}
+
+    for metric in metrics:
+        name = metric.get("name", "")
+        if name in _SPECIAL_METRICS:
+            continue
+        data_list = metric.get("data", [])
+        if not data_list:
+            continue
+
+        if name == "blood_pressure":
+            for e in data_list:
+                d = _parse_date(e.get("date", ""))
+                if d and e.get("systolic") and e.get("diastolic"):
+                    await upsert_health_summary(d, "blood_pressure",
+                        {"systolic": int(e["systolic"]), "diastolic": int(e["diastolic"])})
+            continue
+
+        # 通用 qty 指标
+        metric_type, val_key = _METRIC_DISPLAY.get(name, (None, None))
+        if metric_type is None:
+            continue  # 未知指标，跳过
+        bucket = generic_by_date.setdefault(metric_type, {})
+        # 记住每个 metric_type 对应的 value_json key
+        _VAL_KEY_MAP[metric_type] = val_key
+        for e in data_list:
+            d = _parse_date(e.get("date", ""))
+            if not d:
+                continue
+            qty = float(e.get("qty", 0))
+            ts = e.get("date", "")
+            if d not in bucket or ts > bucket[d].get("_ts", ""):
+                bucket[d] = {"v": round(qty, 1), "_ts": ts}
+
+    for metric_type, dates in generic_by_date.items():
+        vk = _VAL_KEY_MAP.get(metric_type, "value")
+        for d, entry in dates.items():
+            await upsert_health_summary(d, metric_type, {vk: entry["v"]})
+
     for d, total in steps_by_date.items():
         await upsert_health_summary(d, "steps", {"total": int(total)})
 
@@ -5174,6 +5256,30 @@ async def _process_health_data(body: dict) -> None:
         await upsert_health_summary(d, "mood", mood_list)
 
     print(f"✅ /data/health 后台处理完成：写入 {saved_count} 条记忆")
+
+
+@app.api_route("/withings/callback", methods=["GET", "POST", "HEAD"])
+async def withings_oauth_callback(request: Request):
+    """
+    OAuth2 redirect target for Withings API authorization.
+    GET:  redirect from browser after user authorizes (receives ?code=...&state=...)
+    POST: verification probe from Withings servers during URL registration
+    No auth required.
+    """
+    # Withings URL verification probe (POST/HEAD, no params) — return 200
+    if request.method in ("POST", "HEAD"):
+        return Response("ok", media_type="text/plain")
+
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    if code:
+        data = json.dumps({"code": code, "state": state, "ts": int(datetime.now().timestamp())})
+        os.makedirs("/tmp/withings", exist_ok=True)
+        with open("/tmp/withings/auth_code", "w") as f:
+            f.write(data)
+        os.chmod("/tmp/withings/auth_code", 0o644)
+        return Response("<h2>授权成功！</h2><p>可以关闭此页面，回到终端继续。</p>", media_type="text/html")
+    return Response("<h2>授权失败</h2><p>未收到授权码，请重试。</p>", status_code=400, media_type="text/html")
 
 
 @app.post("/data/health")
