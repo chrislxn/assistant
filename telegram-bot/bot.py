@@ -312,6 +312,7 @@ async def build_today_health_block() -> str:
     _DISPLAY: dict[str, tuple[str, str, str]] = {
         "weight":              ("体重",     "kg",     "kg"),
         "body_fat":            ("体脂",     "%",      "pct"),
+        "blood_pressure":      ("血压",     "",       ""),
         "lean_body_mass":      ("去脂体重", "kg",     "kg"),
         "muscle_mass":         ("肌肉量",   "kg",     "kg"),
         "bone_mass":           ("骨量",     "kg",     "kg"),
