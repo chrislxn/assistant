@@ -253,16 +253,21 @@ async def build_today_health_block() -> str:
                    WHERE date = $1 AND metric_type = 'sleep'""",
                 yesterday,
             )
-            # 从 raw_health_data 读额外生理指标（今天或昨天取最新）
-            raw_vitals_rows = await conn.fetch(
-                """SELECT metric_name, raw_json FROM raw_health_data
-                   WHERE data_type = 'health_metrics'
-                     AND metric_name = ANY($1::text[])
-                     AND source_date >= $2
-                   ORDER BY received_at DESC""",
-                ["heart_rate_variability", "respiratory_rate",
-                 "apple_sleeping_wrist_temperature"],
+            # 体重/体成分/血压等低频指标：今日优先，无则取昨日
+            _YESTERDAY_FALLBACK_TYPES = [
+                "weight", "body_fat", "lean_body_mass", "bmi", "blood_pressure",
+                "hrv", "respiratory_rate", "wrist_temp", "blood_oxygen", "vo2_max",
+                "basal_energy", "exercise_time", "stand_hour", "stand_time",
+                "env_audio", "hp_audio", "daylight", "flights", "physical_effort",
+                "walk_speed", "step_length", "walk_asymmetry", "walk_dbl_support",
+                "walk_hr_avg", "stair_up", "stair_down", "breathing_dist",
+                "swim_distance", "swim_strokes", "water_temp", "walk_6min",
+            ]
+            yesterday_extra_rows = await conn.fetch(
+                """SELECT metric_type, value_json FROM health_summary
+                   WHERE date = $1 AND metric_type = ANY($2::text[])""",
                 yesterday,
+                _YESTERDAY_FALLBACK_TYPES,
             )
     except Exception as e:
         log.error("build_today_health_block DB 失败: %s", e)
@@ -277,13 +282,11 @@ async def build_today_health_block() -> str:
         val = sleep_row["value_json"]
         by_type["sleep"] = val if isinstance(val, (dict, list)) else json.loads(val)
 
-    # raw vitals：每个 metric_name 取最新一条（rows 已按 received_at DESC）
-    raw_vitals: dict = {}
-    for row in raw_vitals_rows:
-        name = row["metric_name"]
-        if name not in raw_vitals:
-            val = row["raw_json"]
-            raw_vitals[name] = val if isinstance(val, dict) else json.loads(val)
+    # 体重/体成分/血压：今日无则用昨日
+    for row in yesterday_extra_rows:
+        if row["metric_type"] not in by_type:
+            val = row["value_json"]
+            by_type[row["metric_type"]] = val if isinstance(val, (dict, list)) else json.loads(val)
 
     parts: list[str] = []
 
@@ -305,25 +308,66 @@ async def build_today_health_block() -> str:
         if rhr:
             parts.append(f"静息心率 {rhr}")
 
-    # HRV（单值或取 data 数组均值）
-    if "heart_rate_variability" in raw_vitals:
-        data = raw_vitals["heart_rate_variability"].get("data", [])
-        if data:
-            avg_hrv = sum(d["qty"] for d in data) / len(data)
-            parts.append(f"HRV {avg_hrv:.1f}ms")
+    # ── 通用指标展示映射（label, unit, value_json key）────────────
+    _DISPLAY: dict[str, tuple[str, str, str]] = {
+        "weight":              ("体重",     "kg",     "kg"),
+        "body_fat":            ("体脂",     "%",      "pct"),
+        "lean_body_mass":      ("去脂体重", "kg",     "kg"),
+        "muscle_mass":         ("肌肉量",   "kg",     "kg"),
+        "bone_mass":           ("骨量",     "kg",     "kg"),
+        "bmi":                 ("BMI",      "",       "bmi"),
+        "hrv":                 ("HRV",      "ms",     "ms"),
+        "respiratory_rate":    ("呼吸率",   "/min",   "brpm"),
+        "wrist_temp":          ("腕温",     "°C",     "celsius"),
+        "blood_oxygen":        ("血氧",     "%",      "pct"),
+        "vo2_max":             ("VO2 max",  "",       "ml_kg_min"),
+        "basal_energy":        ("基础代谢", "kcal",   "kcal"),
+        "exercise_time":       ("锻炼",     "min",    "min"),
+        "stand_hour":          ("站立小时", "h",      "count"),
+        "stand_time":          ("站立时间", "min",    "min"),
+        "env_audio":           ("环境噪音", "dBA",    "dba"),
+        "hp_audio":            ("耳机噪音", "dBA",    "dba"),
+        "daylight":            ("日照",     "min",    "min"),
+        "flights":             ("爬楼",     "层",     "count"),
+        "physical_effort":     ("体力消耗", "MET",    "met"),
+        "walk_speed":          ("步行速度", "km/h",   "km_h"),
+        "step_length":         ("步长",     "cm",     "cm"),
+        "walk_asymmetry":      ("步态不对称","%",     "pct"),
+        "walk_dbl_support":    ("双足支撑", "%",      "pct"),
+        "walk_hr_avg":         ("步行心率", "bpm",    "bpm"),
+        "stair_up":            ("上楼梯速", "m/s",    "m_s"),
+        "stair_down":          ("下楼梯速", "m/s",    "m_s"),
+        "breathing_dist":      ("呼吸障碍", "次",     "count"),
+        "swim_distance":       ("游泳距离", "m",      "m"),
+        "swim_strokes":        ("划水次数", "",       "count"),
+        "water_temp":          ("水温",     "°C",     "celsius"),
+        "walk_6min":           ("6分钟步行","m",      "m"),
+    }
+    for metric_type, v in by_type.items():
+        entry = _DISPLAY.get(metric_type)
+        if entry is None:
+            continue
+        label, unit, vk = entry
 
-    # 呼吸率（均值）
-    if "respiratory_rate" in raw_vitals:
-        data = raw_vitals["respiratory_rate"].get("data", [])
-        if data:
-            avg_rr = sum(d["qty"] for d in data) / len(data)
-            parts.append(f"呼吸率 {avg_rr:.1f}/min")
-
-    # 腕温
-    if "apple_sleeping_wrist_temperature" in raw_vitals:
-        data = raw_vitals["apple_sleeping_wrist_temperature"].get("data", [])
-        if data:
-            parts.append(f"腕温 {data[-1]['qty']:.1f}°C")
+        if metric_type == "blood_pressure":
+            if v.get("systolic") and v.get("diastolic"):
+                parts.append(f"血压 {v['systolic']}/{v['diastolic']}")
+        elif metric_type == "weight":
+            if v.get("kg"):
+                parts.append(f"体重 {v['kg']}kg")
+        elif metric_type == "body_fat":
+            if v.get("pct"):
+                parts.append(f"体脂 {v['pct']}%")
+        elif metric_type == "lean_body_mass":
+            if v.get("kg"):
+                parts.append(f"去脂体重 {v['kg']}kg")
+        elif metric_type == "bmi":
+            if v.get("bmi"):
+                parts.append(f"BMI {v['bmi']}")
+        else:
+            val = v.get(vk)
+            if val is not None and val > 0:
+                parts.append(f"{label} {val}{unit}")
 
     if "sleep" in by_type:
         sl = by_type["sleep"]
